@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "docker compose up -d && turbo run dev",
+    "stop": "docker compose down",
+    "clean": "docker compose down -v && pnpm clean"
   },
   "keywords": [],
   "author": "",

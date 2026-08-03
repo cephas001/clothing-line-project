@@ -1,0 +1,670 @@
+openapi: 3.0.3
+info:
+  title: Clothing Line Headless Commerce API
+  version: 1.0.0
+  description: Comprehensive API-First contract orchestrating catalog visibility, mutable cart state machines, stateless authentication, and reverse logistics.
+
+# ==========================================
+# ENDPOINT ROUTING
+# ==========================================
+paths:
+  # --- CATALOG & PRODUCT DOMAIN ---
+  /store/products:
+    get:
+      summary: List and search products across the authorized catalog.
+      parameters:
+        - $ref: "#/components/parameters/SalesChannelHeader"
+        - $ref: "#/components/parameters/RegionHeader"
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: category_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: tags
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: expand
+          in: query
+          schema: { type: string }
+        - name: fields
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Paginated Array of Products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/StandardErrorResponse"
+
+  /store/products/{id}:
+    get:
+      summary: Retrieve a single product entity by its unique identifier.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/SalesChannelHeader"
+        - $ref: "#/components/parameters/RegionHeader"
+        - name: expand
+          in: query
+          schema: { type: string }
+        - name: fields
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Product Object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "404":
+          $ref: "#/components/responses/StandardErrorResponse"
+
+  /store/product-categories:
+    get:
+      summary: List structured product categories for frontend mega-menus.
+      parameters:
+        - name: parent_category_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: include_descendants_tree
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Category Tree
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /store/variants/{id}:
+    get:
+      summary: Retrieve specific variant pricing and localized stock data.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - name: cart_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: region_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Variant Object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductVariant"
+
+  /store/collections:
+    get:
+      summary: Retrieve curated product collections.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Collection Array
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  # --- B2B & ADMIN DOMAIN ---
+  /admin/sales-channels:
+    post:
+      summary: Instantiate a new sales channel to isolate market segments.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, x-faker: company.name }
+                description: { type: string }
+                is_disabled: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Sales Channel Object
+        "401":
+          $ref: "#/components/responses/StandardErrorResponse"
+
+  /admin/sales-channels/{id}/products:
+    post:
+      summary: Associate specific products with a designated sales channel.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_ids]
+              properties:
+                product_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: Updated Channel
+
+  /admin/regions:
+    post:
+      summary: Create a new geographical region to establish localized currency and tax boundaries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                [
+                  name,
+                  currency_code,
+                  tax_rate,
+                  payment_providers,
+                  fulfillment_providers,
+                ]
+              properties:
+                name: { type: string, x-faker: location.country }
+                currency_code: { type: string, example: "ngn" }
+                tax_rate: { type: integer }
+                payment_providers: { type: array, items: { type: string } }
+                fulfillment_providers: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Region Object
+
+  /admin/regions/{id}:
+    put:
+      summary: Modify existing regional parameters.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                currency_code: { type: string }
+                tax_rate: { type: integer }
+      responses:
+        "200":
+          description: Updated Region
+
+  # --- CART & CHECKOUT LIFECYCLE ---
+  /store/carts:
+    post:
+      summary: Initialize a new transient cart session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                region_id: { type: string, format: uuid }
+                sales_channel_id: { type: string, format: uuid }
+                email: { type: string, format: email, x-faker: internet.email }
+                country_code: { type: string, x-faker: location.countryCode }
+      responses:
+        "200":
+          description: Cart Object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cart"
+
+  /store/carts/{id}:
+    get:
+      summary: Retrieve a cart's comprehensive current state.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Cart Object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cart"
+        "404":
+          $ref: "#/components/responses/StandardErrorResponse"
+
+  /store/carts/{id}/line-items:
+    post:
+      summary: Add a highly specific product variant matrix to the cart.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [variant_id, quantity]
+              properties:
+                variant_id: { type: string, format: uuid }
+                quantity: { type: integer, minimum: 1 }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Updated Cart
+        "400":
+          $ref: "#/components/responses/StandardErrorResponse"
+
+  /store/carts/{id}/line-items/{line_id}:
+    post:
+      summary: Update the required quantity of an existing line item.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - name: line_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity: { type: integer, minimum: 1 }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Updated Cart
+        "409":
+          $ref: "#/components/responses/StandardErrorResponse"
+    delete:
+      summary: Remove a line item entirely from the cart session.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - name: line_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Updated Cart
+
+  /store/carts/{id}/shipping-methods:
+    post:
+      summary: Apply a selected fulfillment option to the cart.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [option_id]
+              properties:
+                option_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Updated Cart
+
+  /store/carts/{id}/payment-sessions:
+    post:
+      summary: Instruct the backend to initialize cryptographic payment intents.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Cart with Payment Sessions
+
+  /store/carts/{id}/complete:
+    post:
+      summary: Authorize payment and convert the transient cart into an immutable order entity.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Order Finalization Response
+
+  # --- AUTHENTICATION & IDENTITY ---
+  /store/auth:
+    post:
+      summary: Authenticate a customer and return a signed JWT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: JWT Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+
+  /store/auth/{email}:
+    get:
+      summary: Check if an email exists prior to attempting registration flows.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          schema: { type: string, format: email }
+      responses:
+        "200":
+          description: Email existence boolean
+
+  /store/customers:
+    post:
+      summary: Register a new customer profile.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, password]
+              properties:
+                first_name: { type: string, x-faker: person.firstName }
+                last_name: { type: string, x-faker: person.lastName }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Customer Object
+
+  /store/customers/me:
+    get:
+      summary: Retrieve the currently authenticated customer profile.
+      responses:
+        "200":
+          description: Customer Object
+
+  /store/customers/logout:
+    post:
+      summary: Explicitly revoke the active JWT to terminate the session securely via Redis Denylist.
+      responses:
+        "200":
+          description: Session terminated
+
+  # --- POST-PURCHASE LOGISTICS (REVERSALS & SWAPS) ---
+  /store/orders/{id}:
+    get:
+      summary: Retrieve comprehensive, immutable order details.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Order Object
+
+  /store/orders/customer:
+    get:
+      summary: List paginated historical orders tied strictly to the authenticated customer session.
+      responses:
+        "200":
+          description: Array of Orders
+
+  /store/returns:
+    post:
+      summary: Initiate a return authorization, computing accurate prorated refunds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, items]
+              properties:
+                order_id: { type: string, format: uuid }
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [item_id, quantity]
+                    properties:
+                      item_id: { type: string, format: uuid }
+                      quantity: { type: integer, minimum: 1 }
+                      reason_code: { type: string }
+      responses:
+        "200":
+          description: Return Authorization Object
+
+  /store/swaps:
+    post:
+      summary: Create an exchange workflow, calculating price variances.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, return_items, additional_items]
+              properties:
+                order_id: { type: string, format: uuid }
+                return_items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id: { type: string, format: uuid }
+                      quantity: { type: integer }
+                additional_items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      variant_id: { type: string, format: uuid }
+                      quantity: { type: integer }
+      responses:
+        "200":
+          description: Swap Object
+
+  /store/order-edits/{id}:
+    post:
+      summary: Request administrative modifications to an existing, unfulfilled order.
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action_type, line_item_id, quantity]
+              properties:
+                action_type: { type: string }
+                line_item_id: { type: string, format: uuid }
+                quantity: { type: integer }
+      responses:
+        "200":
+          description: Order Edit Object
+
+# ==========================================
+# SINGLE CONSOLIDATED COMPONENTS BLOCK
+# ==========================================
+components:
+  parameters:
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SalesChannelHeader:
+      name: sales_channel_id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+    RegionHeader:
+      name: region_id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    StandardErrorResponse:
+      description: Standardized error envelope mapped across all non-200 HTTP routes.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StandardError"
+
+  schemas:
+    StandardError:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: INVALID_SIGNATURE
+            message:
+              type: string
+              example: "Cryptographic signature verification failed."
+            details:
+              type: object
+              additionalProperties: true
+
+    Price:
+      type: object
+      required: [amount, currency_code]
+      properties:
+        amount:
+          type: integer
+          x-faker: finance.amount
+        currency_code:
+          type: string
+          example: "ngn"
+
+    ProductVariant:
+      type: object
+      required: [id, sku, inventory_quantity, allow_backorder, prices]
+      properties:
+        id:
+          type: string
+          format: uuid
+          x-faker: string.uuid
+        sku:
+          type: string
+          x-faker: string.alphanumeric
+        inventory_quantity:
+          type: integer
+          x-faker: number.int
+        allow_backorder:
+          type: boolean
+          example: false
+        prices:
+          type: array
+          items:
+            $ref: "#/components/schemas/Price"
+
+    Product:
+      type: object
+      required: [id, title, handle, variants]
+      properties:
+        id:
+          type: string
+          format: uuid
+          x-faker: string.uuid
+        title:
+          type: string
+          x-faker: commerce.productName
+        handle:
+          type: string
+          x-faker: internet.domainWord
+        description:
+          type: string
+          x-faker: commerce.productDescription
+        options:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        variants:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductVariant"
+
+    CartLineItem:
+      type: object
+      required: [id, variant_id, quantity]
+      properties:
+        id:
+          type: string
+          format: uuid
+        variant_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Cart:
+      type: object
+      required: [id, region_id, items]
+      properties:
+        id:
+          type: string
+          format: uuid
+          x-faker: string.uuid
+        region_id:
+          type: string
+          format: uuid
+        sales_channel_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartLineItem"
