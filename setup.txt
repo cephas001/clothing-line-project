@@ -1,39 +1,76 @@
-Install the Prerequisites: 
-Ensure that you have Node.js installed, install pnpm globally (npm install -g pnpm), and install Docker Desktop.
+Headless E-Commerce Monorepo Setup Guide
 
-Clone the Repository:
+To ensure our engineering environments are completely identical and to avoid "it works on my machine" integration bugs, follow this step-by-step guide to configure the monorepo, local databases, and mock servers.
 
-git clone <GITHUB_REPOSITORY_URL>
+1. Install the Prerequisites
+You will need a few core platform tools installed on your machine before pulling the code.
+
+- Node.js: Ensure you have a recent version of Node installed.
+- pnpm: We are using pnpm instead of npm because it natively supports Turborepo workspaces and drastically reduces node_modules bloat. Install it globally by running: 
+
+npm install -g pnpm
+
+- Docker Desktop: Download and install Docker Desktop from docker.com.
+Windows Users: Ensure you have WSL 2 enabled. I highly recommend opening your terminal and running wsl --install -d Ubuntu-26.04 to install a stable Linux subsystem before installing Docker Desktop, as Docker will seamlessly integrate with it.
+
+2. Clone the Repository
+Pull the centralized codebase containing the Next.js frontend, Express API, and background workers.
+
+git clone https://github.com/cephas001/clothing-line-project.git
 cd clothing-line-project
 
-Install Dependencies: Run this in the root folder to let pnpm wire up the workspaces:
+3. Install Dependencies
+Run this command in the root folder. pnpm will crawl through the pnpm-workspace.yaml file and wire up all dependencies globally across the frontend and backend.
+
 pnpm install
 
-Spin Up the Infrastructure: Boot up the identical database environment:
+Note: If the installation fails with an [ERR_PNPM_IGNORED_BUILDS] error regarding @scarf/scarf or any other package, this is a built-in security feature. Simply run pnpm approve-builds, hit Enter to authorize it, and then run pnpm install again.
+
+4. Spin Up the Infrastructure
+We have virtualized the entire database layer using Docker Compose. Run the following command in the root folder:
+
 docker compose up -d
 
-Once you run this last command, your machine will pull the Postgres and Redis images the project uses.
+This runs the containers in "detached mode" (in the background). Your machine will pull the exact PostgreSQL 18 and Redis 7 images the project uses, configure the ports, and start them in isolated containers.
 
+5. Accessing the Databases (Important Note)
+The Docker terminal logs and desktop application might show URLs like http://localhost:5433/. Do not open these in your web browser. Browsers speak HTTP, while PostgreSQL and Redis use custom binary protocols. Your browser will just show an empty page or drop the connection.
 
-HOW TO ACTUALLY ACCESS THE DATABASES
-
-To interact with these containers, view your tables, or check your cache, you need to use dedicated database clients that speak their native languages.
+To interact with these containers, view your tables, or check the cache, you must use dedicated database clients.
 
 For PostgreSQL:
-You will want to download a graphical SQL client. Please download:
-pgAdmin: The official, comprehensive PostgreSQL management tool.
 
-How to connect: Open pgAdmin4, create a new PostgreSQL connection, and use the credentials you defined in your docker-compose.yml file:
+Download pgAdmin4, the official, comprehensive PostgreSQL management tool.
+Open pgAdmin4 and create a new server connection.
 
 Host: localhost
-Port: 5433
+Port: 5433 (Note: We mapped this to 5433 instead of the default 5432 to prevent conflicts if you already have a native Windows Postgres installation running in the background).
 User: admin
 Password: password
 Database: commerce_db
 
 For Redis:
-You will want a Redis GUI to visualize your BullMQ background queues and your JWT denylists once you start building them.
-RedisInsight: The official, powerful GUI provided by Redis.
 
-How to connect: Open RedisInsight, create a new connection, and set the Host to localhost and the Port to 6379. Since we didn't set a password in the Docker Compose file, you can leave the password field blank.
+Download RedisInsight, the official GUI to visualize our BullMQ background queues and JWT denylists.
+Open RedisInsight and create a new connection.
 
+Host: localhost
+Port: 6379
+
+Leave the password field completely blank.
+
+6. Booting the Development Environment
+With the databases running in the background, you can launch the actual application stack from the root folder:
+
+pnpm run dev
+
+This triggers our Turborepo orchestrator. It will execute parallel tasks to boot up:
+
+The Prism Mock Server (localhost:4010): This reads our openapi.yaml contract and instantly generates a lifelike backend that returns structurally perfect, dynamic mock data (using Faker.js).
+
+The Next.js Storefront (localhost:3000): The React frontend is pre-configured via .env.local to point all network traffic to the Prism mock server, meaning you are completely unblocked to build UI components while the live Express backend is being engineered.
+
+7. Shutting Down
+Pressing Ctrl+C in your terminal will kill the Next.js and Prism web servers, but the Docker databases will keep running in the background. To gracefully shut down the database containers, run:
+
+pnpm run stop
