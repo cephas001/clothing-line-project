@@ -1,0 +1,39 @@
+Install the Prerequisites: 
+Ensure that you have Node.js installed, install pnpm globally (npm install -g pnpm), and install Docker Desktop.
+
+Clone the Repository:
+
+git clone <GITHUB_REPOSITORY_URL>
+cd clothing-line-project
+
+Install Dependencies: Run this in the root folder to let pnpm wire up the workspaces:
+pnpm install
+
+Spin Up the Infrastructure: Boot up the identical database environment:
+docker compose up -d
+
+Once you run this last command, your machine will pull the Postgres and Redis images the project uses.
+
+
+HOW TO ACTUALLY ACCESS THE DATABASES
+
+To interact with these containers, view your tables, or check your cache, you need to use dedicated database clients that speak their native languages.
+
+For PostgreSQL:
+You will want to download a graphical SQL client. Please download:
+pgAdmin: The official, comprehensive PostgreSQL management tool.
+
+How to connect: Open pgAdmin4, create a new PostgreSQL connection, and use the credentials you defined in your docker-compose.yml file:
+
+Host: localhost
+Port: 5433
+User: admin
+Password: password
+Database: commerce_db
+
+For Redis:
+You will want a Redis GUI to visualize your BullMQ background queues and your JWT denylists once you start building them.
+RedisInsight: The official, powerful GUI provided by Redis.
+
+How to connect: Open RedisInsight, create a new connection, and set the Host to localhost and the Port to 6379. Since we didn't set a password in the Docker Compose file, you can leave the password field blank.
+
