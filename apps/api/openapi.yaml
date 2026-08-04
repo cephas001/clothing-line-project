@@ -1,8 +1,25 @@
 openapi: 3.0.3
+
 info:
   title: Clothing Line Headless Commerce API
   version: 1.0.0
   description: Comprehensive API-First contract orchestrating catalog visibility, mutable cart state machines, stateless authentication, and reverse logistics.
+
+tags:
+  - name: Catalog
+    description: Product catalog and browsing
+  - name: Cart
+    description: Shopping cart operations
+  - name: Authentication
+    description: Customer authentication
+  - name: Customers
+    description: Customer account operations
+  - name: Orders
+    description: Order retrieval and management
+  - name: Returns
+    description: Returns and exchanges
+  - name: Admin
+    description: Administrative operations
 
 # ==========================================
 # ENDPOINT ROUTING
@@ -11,6 +28,8 @@ paths:
   # --- CATALOG & PRODUCT DOMAIN ---
   /store/products:
     get:
+      tags:
+        - Catalog
       summary: List and search products across the authorized catalog.
       parameters:
         - $ref: "#/components/parameters/SalesChannelHeader"
@@ -50,6 +69,8 @@ paths:
 
   /store/products/{id}:
     get:
+      tags:
+        - Catalog
       summary: Retrieve a single product entity by its unique identifier.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -73,6 +94,8 @@ paths:
 
   /store/product-categories:
     get:
+      tags:
+        - Catalog
       summary: List structured product categories for frontend mega-menus.
       parameters:
         - name: parent_category_id
@@ -93,6 +116,8 @@ paths:
 
   /store/variants/{id}:
     get:
+      tags:
+        - Catalog
       summary: Retrieve specific variant pricing and localized stock data.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -112,6 +137,8 @@ paths:
 
   /store/collections:
     get:
+      tags:
+        - Catalog
       summary: Retrieve curated product collections.
       parameters:
         - name: limit
@@ -133,6 +160,8 @@ paths:
   # --- B2B & ADMIN DOMAIN ---
   /admin/sales-channels:
     post:
+      tags:
+        - Admin
       summary: Instantiate a new sales channel to isolate market segments.
       requestBody:
         required: true
@@ -157,6 +186,8 @@ paths:
 
   /admin/sales-channels/{id}/products:
     post:
+      tags:
+        - Admin
       summary: Associate specific products with a designated sales channel.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -183,6 +214,8 @@ paths:
 
   /admin/regions:
     post:
+      tags:
+        - Admin
       summary: Create a new geographical region to establish localized currency and tax boundaries.
       requestBody:
         required: true
@@ -214,6 +247,8 @@ paths:
 
   /admin/regions/{id}:
     put:
+      tags:
+        - Admin
       summary: Modify existing regional parameters.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -238,6 +273,8 @@ paths:
   # --- CART & CHECKOUT LIFECYCLE ---
   /store/carts:
     post:
+      tags:
+        - Cart
       summary: Initialize a new transient cart session.
       requestBody:
         required: true
@@ -260,6 +297,8 @@ paths:
 
   /store/carts/{id}:
     get:
+      tags:
+        - Cart
       summary: Retrieve a cart's comprehensive current state.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -275,6 +314,8 @@ paths:
 
   /store/carts/{id}/line-items:
     post:
+      tags:
+        - Cart
       summary: Add a highly specific product variant matrix to the cart.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -301,6 +342,8 @@ paths:
 
   /store/carts/{id}/line-items/{line_id}:
     post:
+      tags:
+        - Cart
       summary: Update the required quantity of an existing line item.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -328,6 +371,8 @@ paths:
         "409":
           $ref: "#/components/responses/StandardErrorResponse"
     delete:
+      tags:
+        - Cart
       summary: Remove a line item entirely from the cart session.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -345,6 +390,8 @@ paths:
 
   /store/carts/{id}/shipping-methods:
     post:
+      tags:
+        - Cart
       summary: Apply a selected fulfillment option to the cart.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -367,6 +414,8 @@ paths:
 
   /store/carts/{id}/payment-sessions:
     post:
+      tags:
+        - Cart
       summary: Instruct the backend to initialize cryptographic payment intents.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -380,6 +429,8 @@ paths:
 
   /store/carts/{id}/complete:
     post:
+      tags:
+        - Cart
       summary: Authorize payment and convert the transient cart into an immutable order entity.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -394,6 +445,8 @@ paths:
   # --- AUTHENTICATION & IDENTITY ---
   /store/auth:
     post:
+      tags:
+        - Authentication
       summary: Authenticate a customer and return a signed JWT.
       requestBody:
         required: true
@@ -417,6 +470,8 @@ paths:
 
   /store/auth/{email}:
     get:
+      tags:
+        - Authentication
       summary: Check if an email exists prior to attempting registration flows.
       parameters:
         - name: email
@@ -435,6 +490,8 @@ paths:
 
   /store/customers:
     post:
+      tags:
+        - Customers
       summary: Register a new customer profile.
       requestBody:
         required: true
@@ -458,6 +515,8 @@ paths:
 
   /store/customers/me:
     get:
+      tags:
+        - Customers
       summary: Retrieve the currently authenticated customer profile.
       responses:
         "200":
@@ -469,6 +528,8 @@ paths:
 
   /store/customers/logout:
     post:
+      tags:
+        - Customers
       summary: Explicitly revoke the active JWT to terminate the session securely via Redis Denylist.
       responses:
         "200":
@@ -477,6 +538,8 @@ paths:
   # --- POST-PURCHASE LOGISTICS (REVERSALS & SWAPS) ---
   /store/orders/{id}:
     get:
+      tags:
+        - Orders
       summary: Retrieve comprehensive, immutable order details.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -490,6 +553,8 @@ paths:
 
   /store/orders/customer:
     get:
+      tags:
+        - Orders
       summary: List paginated historical orders tied strictly to the authenticated customer session.
       responses:
         "200":
@@ -503,6 +568,8 @@ paths:
 
   /store/returns:
     post:
+      tags:
+        - Returns
       summary: Initiate a return authorization, computing accurate prorated refunds.
       requestBody:
         required: true
@@ -532,6 +599,8 @@ paths:
 
   /store/swaps:
     post:
+      tags:
+        - Returns
       summary: Create an exchange workflow, calculating price variances.
       requestBody:
         required: true
@@ -566,6 +635,8 @@ paths:
 
   /store/order-edits/{id}:
     post:
+      tags:
+        - Orders
       summary: Request administrative modifications to an existing, unfulfilled order.
       parameters:
         - $ref: "#/components/parameters/PathId"
