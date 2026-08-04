@@ -123,9 +123,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            [key: string]: unknown;
-                        }[];
+                        "application/json": components["schemas"]["Category"][];
                     };
                 };
             };
@@ -205,9 +203,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            [key: string]: unknown;
-                        }[];
+                        "application/json": components["schemas"]["Collection"][];
                     };
                 };
             };
@@ -253,7 +249,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["SalesChannel"];
+                    };
                 };
                 401: components["responses"]["StandardErrorResponse"];
             };
@@ -296,7 +294,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["SalesChannel"];
+                    };
                 };
             };
         };
@@ -341,7 +341,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Region"];
+                    };
                 };
             };
         };
@@ -384,7 +386,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Region"];
+                    };
                 };
             };
         };
@@ -519,7 +523,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Cart"];
+                    };
                 };
                 400: components["responses"]["StandardErrorResponse"];
             };
@@ -566,7 +572,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Cart"];
+                    };
                 };
                 409: components["responses"]["StandardErrorResponse"];
             };
@@ -589,7 +597,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Cart"];
+                    };
                 };
             };
         };
@@ -631,7 +641,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Cart"];
+                    };
                 };
             };
         };
@@ -667,7 +679,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Cart"];
+                    };
                 };
             };
         };
@@ -703,7 +717,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Order"];
+                    };
                 };
             };
         };
@@ -784,7 +800,11 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            exists?: boolean;
+                        };
+                    };
                 };
             };
         };
@@ -831,7 +851,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Customer"];
+                    };
                 };
             };
         };
@@ -863,7 +885,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Customer"];
+                    };
                 };
             };
         };
@@ -933,7 +957,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Order"];
+                    };
                 };
             };
         };
@@ -967,7 +993,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Order"][];
+                    };
                 };
             };
         };
@@ -1016,7 +1044,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["ReturnAuthorization"];
+                    };
                 };
             };
         };
@@ -1067,7 +1097,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Swap"];
+                    };
                 };
             };
         };
@@ -1112,7 +1144,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["OrderEdit"];
+                    };
                 };
             };
         };
@@ -1164,6 +1198,18 @@ export interface components {
             }[];
             variants: components["schemas"]["ProductVariant"][];
         };
+        Category: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            parent_category_id?: string | null;
+        };
+        Collection: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+        };
         CartLineItem: {
             /** Format: uuid */
             id: string;
@@ -1184,6 +1230,77 @@ export interface components {
             /** Format: email */
             email?: string;
             items: components["schemas"]["CartLineItem"][];
+        };
+        Order: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            cart_id: string;
+            /** Format: uuid */
+            customer_id: string;
+            /** @example unfulfilled */
+            fulfillment_status: string;
+            applied_discounts?: {
+                [key: string]: unknown;
+            }[];
+        };
+        Transaction: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            order_id: string;
+            amount: number;
+            reference?: string;
+        };
+        Customer: {
+            /** Format: uuid */
+            id: string;
+            first_name: string;
+            last_name: string;
+            /** Format: email */
+            email: string;
+        };
+        SalesChannel: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            description?: string;
+            is_disabled: boolean;
+        };
+        Region: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @example ngn */
+            currency_code: string;
+            tax_rate: number;
+            payment_providers?: string[];
+            fulfillment_providers?: string[];
+        };
+        ReturnAuthorization: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            order_id: string;
+            refund_amount: number;
+            /** @example pending */
+            status?: string;
+        };
+        Swap: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            order_id: string;
+            price_variance: number;
+            /** @example pending */
+            status?: string;
+        };
+        OrderEdit: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            order_id: string;
+            action_type: string;
         };
     };
     responses: {
