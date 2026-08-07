@@ -1,26 +1,52 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --color-ink: #0a0a0a;         /* near-black — primary            */
+  --color-paper: #f7f6f4;       /* off-white page background       */
+  --color-paper-2: #f5f4f2;     /* slightly lighter surface        */
+  --color-line-soft: #d8d6d2;   /* soft dividers                   */
+  --color-muted: #6b6b6b;       /* secondary text                  */
+  --color-muted-2: #9a9a9a;     /* footer muted text               */
+  --color-placeholder: #e9e7e3; /* image placeholder background    */
+  --color-disabled: #c9c7c3;    /* disabled button background      */
+
+
+  --font-display: var(--font-archivo), sans-serif;
+  --font-mono: var(--font-space-mono), monospace;
+
+  --animate-marquee: marquee 22s linear infinite;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
