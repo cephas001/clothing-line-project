@@ -11,20 +11,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List and search products across the authorized catalog. */
+        /**
+         * Browse the catalogue with filtering and pagination.
+         * @description Returns a paginated, region- and channel-aware product list. Supports an optional
+         *     category filter and free-text search. `expand`/`fields` projections are honoured by
+         *     the read adapter when present.
+         */
         get: {
             parameters: {
                 query?: {
-                    q?: string;
-                    category_id?: string;
-                    tags?: string;
+                    searchQuery?: string;
+                    categoryId?: string;
                     limit?: number;
                     offset?: number;
-                    expand?: string;
-                    fields?: string;
+                    /** @description Comma-separated nested relations to expand (e.g. `variants,options`). */
+                    expand?: components["parameters"]["ExpandQuery"];
+                    /** @description Comma-separated subset of fields to project (e.g. `id,title,thumbnail`). */
+                    fields?: components["parameters"]["FieldsQuery"];
                 };
                 header?: {
+                    /** @description Scopes catalogue reads to a specific sales channel. */
                     sales_channel_id?: components["parameters"]["SalesChannelHeader"];
+                    /** @description Scopes catalogue reads to a specific region (currency, tax, pricing). */
                     region_id?: components["parameters"]["RegionHeader"];
                 };
                 path?: never;
@@ -32,7 +40,53 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Paginated Array of Products */
+                /** @description Paginated product list with a total count. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProductList"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/products/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Full-text search over the product catalogue. */
+        get: {
+            parameters: {
+                query: {
+                    query: string;
+                    limit?: number;
+                };
+                header?: {
+                    /** @description Scopes catalogue reads to a specific sales channel. */
+                    sales_channel_id?: components["parameters"]["SalesChannelHeader"];
+                    /** @description Scopes catalogue reads to a specific region (currency, tax, pricing). */
+                    region_id?: components["parameters"]["RegionHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Matching products. */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -42,6 +96,7 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         put?: never;
@@ -59,15 +114,19 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Retrieve a single product entity by its unique identifier. */
+        /** Retrieve detailed product information for a store context. */
         get: {
             parameters: {
                 query?: {
-                    expand?: string;
-                    fields?: string;
+                    /** @description Comma-separated nested relations to expand (e.g. `variants,options`). */
+                    expand?: components["parameters"]["ExpandQuery"];
+                    /** @description Comma-separated subset of fields to project (e.g. `id,title,thumbnail`). */
+                    fields?: components["parameters"]["FieldsQuery"];
                 };
                 header?: {
+                    /** @description Scopes catalogue reads to a specific sales channel. */
                     sales_channel_id?: components["parameters"]["SalesChannelHeader"];
+                    /** @description Scopes catalogue reads to a specific region (currency, tax, pricing). */
                     region_id?: components["parameters"]["RegionHeader"];
                 };
                 path: {
@@ -77,7 +136,7 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Product Object */
+                /** @description Product DTO. */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -86,7 +145,146 @@ export interface paths {
                         "application/json": components["schemas"]["Product"];
                     };
                 };
+                400: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/products/{id}/related": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve cross-selling recommendations for a product. */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                };
+                header?: {
+                    /** @description Scopes catalogue reads to a specific sales channel. */
+                    sales_channel_id?: components["parameters"]["SalesChannelHeader"];
+                    /** @description Scopes catalogue reads to a specific region (currency, tax, pricing). */
+                    region_id?: components["parameters"]["RegionHeader"];
+                };
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Recommended products. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Product"][];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/products/{id}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a verified-buyer product review.
+         * @description Only customers who purchased the product may review it (`UNAUTHORIZED_REVIEW`).
+         *     A customer may submit a single review per product (`INVALID_OPERATION`).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SubmitReviewRequest"];
+                };
+            };
+            responses: {
+                /** @description Review created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/variants/{id}/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check inventory, backorder and localized pricing for a variant. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description Scopes catalogue reads to a specific region (currency, tax, pricing). */
+                    region_id?: components["parameters"]["RegionHeader"];
+                };
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Variant availability DTO. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["VariantAvailability"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         put?: never;
@@ -104,12 +302,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List structured product categories for frontend mega-menus. */
+        /** Retrieve the category tree. */
         get: {
             parameters: {
                 query?: {
-                    parent_category_id?: string;
-                    include_descendants_tree?: boolean;
+                    includeDescendants?: boolean;
                 };
                 header?: never;
                 path?: never;
@@ -117,277 +314,20 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Category Tree */
+                /** @description Flat category list; tree structure is implied by `parentCategoryId`. */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            [key: string]: unknown;
-                        }[];
+                        "application/json": components["schemas"]["Category"][];
                     };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/variants/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Retrieve specific variant pricing and localized stock data. */
-        get: {
-            parameters: {
-                query?: {
-                    cart_id?: string;
-                    region_id?: string;
-                };
-                header?: never;
-                path: {
-                    id: components["parameters"]["PathId"];
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Variant Object */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["ProductVariant"];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/collections": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Retrieve curated product collections. */
-        get: {
-            parameters: {
-                query?: {
-                    limit?: number;
-                    offset?: number;
-                };
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Collection Array */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            [key: string]: unknown;
-                        }[];
-                    };
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/admin/sales-channels": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Instantiate a new sales channel to isolate market segments. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        name: string;
-                        description?: string;
-                        /** @default false */
-                        is_disabled?: boolean;
-                    };
-                };
-            };
-            responses: {
-                /** @description Sales Channel Object */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                401: components["responses"]["StandardErrorResponse"];
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/admin/sales-channels/{id}/products": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Associate specific products with a designated sales channel. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: components["parameters"]["PathId"];
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        product_ids: string[];
-                    };
-                };
-            };
-            responses: {
-                /** @description Updated Channel */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/admin/regions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a new geographical region to establish localized currency and tax boundaries. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        name: string;
-                        /** @example ngn */
-                        currency_code: string;
-                        tax_rate: number;
-                        payment_providers: string[];
-                        fulfillment_providers: string[];
-                    };
-                };
-            };
-            responses: {
-                /** @description Region Object */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/admin/regions/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Modify existing regional parameters. */
-        put: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: components["parameters"]["PathId"];
-                };
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        name?: string;
-                        currency_code?: string;
-                        tax_rate?: number;
-                    };
-                };
-            };
-            responses: {
-                /** @description Updated Region */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
         post?: never;
         delete?: never;
         options?: never;
@@ -404,7 +344,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Initialize a new transient cart session. */
+        /**
+         * Initialize a new cart session.
+         * @description Creates a transient cart bound to a region and sales channel. Both identifiers are
+         *     required. An optional email and ISO country code may be attached.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -414,19 +358,11 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        /** Format: uuid */
-                        region_id?: string;
-                        /** Format: uuid */
-                        sales_channel_id?: string;
-                        /** Format: email */
-                        email?: string;
-                        country_code?: string;
-                    };
+                    "application/json": components["schemas"]["InitializeCartRequest"];
                 };
             };
             responses: {
-                /** @description Cart Object */
+                /** @description Newly created cart. */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -435,6 +371,9 @@ export interface paths {
                         "application/json": components["schemas"]["Cart"];
                     };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -450,7 +389,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Retrieve a cart's comprehensive current state. */
+        /** Retrieve the current state of a cart. */
         get: {
             parameters: {
                 query?: never;
@@ -462,7 +401,7 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Cart Object */
+                /** @description Cart DTO. */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -472,6 +411,7 @@ export interface paths {
                     };
                 };
                 404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         put?: never;
@@ -491,7 +431,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Add a highly specific product variant matrix to the cart. */
+        /**
+         * Add a product variant line item to the cart.
+         * @description Resolves the regional price server-side. Rejects when inventory is insufficient and
+         *     backordering is disabled (`OUT_OF_STOCK`) or when no regional price exists
+         *     (`REGIONAL_PRICE_MISSING`).
+         */
         post: {
             parameters: {
                 query?: never;
@@ -503,25 +448,68 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        /** Format: uuid */
-                        variant_id: string;
-                        quantity: number;
-                        metadata?: {
-                            [key: string]: unknown;
-                        };
-                    };
+                    "application/json": components["schemas"]["AddLineItemRequest"];
                 };
             };
             responses: {
-                /** @description Updated Cart */
-                200: {
+                /** @description Line item added. Retrieve the cart via GET /store/carts/{id}. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/line-items/custom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a custom (B2B) line item with an explicit title and unit price.
+         * @description Custom line items have no variant; the client supplies `title`, `quantity` and
+         *     `unitPriceMinor` (integer minor units, non-negative).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AddCustomLineItemRequest"];
+                };
+            };
+            responses: {
+                /** @description Custom line item added. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -538,9 +526,12 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
-        /** Update the required quantity of an existing line item. */
-        post: {
+        /**
+         * Update the quantity of an existing line item.
+         * @description Variant-backed items are re-validated against current inventory; custom items only
+         *     respect the quantity bounds.
+         */
+        put: {
             parameters: {
                 query?: never;
                 header?: never;
@@ -552,26 +543,25 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        quantity: number;
-                        metadata?: {
-                            [key: string]: unknown;
-                        };
-                    };
+                    "application/json": components["schemas"]["UpdateLineItemQuantityRequest"];
                 };
             };
             responses: {
-                /** @description Updated Cart */
-                200: {
+                /** @description Quantity updated. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
-        /** Remove a line item entirely from the cart session. */
+        post?: never;
+        /** Remove a line item from the cart. */
         delete: {
             parameters: {
                 query?: never;
@@ -584,13 +574,16 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Updated Cart */
-                200: {
+                /** @description Line item removed. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         options?: never;
@@ -598,7 +591,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/store/carts/{id}/shipping-methods": {
+    "/store/carts/{id}/discount": {
         parameters: {
             query?: never;
             header?: never;
@@ -607,7 +600,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Apply a selected fulfillment option to the cart. */
+        /**
+         * Apply a promotion code to the cart.
+         * @description Only one active discount may be applied per cart. The code is case-insensitive and
+         *     normalised to uppercase. Rejects inactive/unknown codes and codes whose minimum spend
+         *     is not met.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -619,20 +617,207 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        /** Format: uuid */
-                        option_id: string;
-                    };
+                    "application/json": components["schemas"]["ApplyDiscountRequest"];
                 };
             };
             responses: {
-                /** @description Updated Cart */
-                200: {
+                /** @description Discount applied. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Merge a guest cart into the authenticated customer's active cart.
+         * @description Matching line items (same variant, unit price, title and metadata) are merged by
+         *     summing quantities; unmatched items are copied. The guest cart is deleted.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MergeGuestCartRequest"];
+                };
+            };
+            responses: {
+                /** @description Carts merged. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/shipping-address": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the checkout shipping address and recompute regional tax.
+         * @description The address is stored as a JSONB object. Tax is recalculated for the address via the
+         *     tax service; any validated `taxAmountMinor` is persisted on the cart.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SetShippingAddressRequest"];
+                };
+            };
+            responses: {
+                /** @description Shipping address applied. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/shipping-quotes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retrieve dynamic shipping quotes for the cart.
+         * @description Quotes are fetched from the logistics provider (e.g. Shipbubble). A shipping address
+         *     must be set first (`INVALID_STATE` otherwise).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Available shipping quotes, capped at 50. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShippingQuote"][];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/insurance-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch an embedded insurance quote for the cart value.
+         * @description Quotes are computed by the insurance provider (e.g. Curacel) from the cart total.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Insurance premium in minor units. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InsuranceQuoteResponse"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -650,7 +835,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Instruct the backend to initialize cryptographic payment intents. */
+        /**
+         * Initialize a payment intent for the cart.
+         * @description Initialises a cryptographic payment intent with the payment gateway and returns the
+         *     hosted authorization URL. Rejects empty carts, carts already initialized, or carts
+         *     already paid.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -660,15 +850,25 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["PaymentSessionRequest"];
+                };
+            };
             responses: {
-                /** @description Cart with Payment Sessions */
+                /** @description Payment authorization URL. */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["PaymentSessionResponse"];
+                    };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -686,7 +886,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Authorize payment and convert the transient cart into an immutable order entity. */
+        /** Complete checkout and convert the cart into an immutable order. */
         post: {
             parameters: {
                 query?: never;
@@ -698,13 +898,71 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Order Finalization Response */
+                /** @description Finalized order. */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Order"];
+                    };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/payments/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Payment gateway webhook for order finalization.
+         * @description Asynchronous payment-confirmation webhook. The raw body is verified with an HMAC-SHA512
+         *     signature (`PAYMENT_VERIFICATION_FAILED` on mismatch). Idempotent via the transaction
+         *     reference; the cart is converted to an order and a transaction record persisted.
+         *     Rejects when the paid amount differs from the cart total (`INVALID_PAYMENT_AMOUNT`).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description HMAC-SHA512 signature of the raw request body. */
+                    "X-Payment-Signature": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["WebhookPaymentFinalizeRequest"];
+                };
+            };
+            responses: {
+                /** @description Finalized order. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Order"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -722,7 +980,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Authenticate a customer and return a signed JWT. */
+        /**
+         * Authenticate a customer and issue a JWT.
+         * @description Returns a signed access token. Credentials are checked via constant-time comparison;
+         *     unknown emails and bad passwords both yield `INVALID_CREDENTIALS`. Accounts that are
+         *     disabled or locked return `ACCOUNT_DISABLED` / `ACCOUNT_LOCKED`.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -732,64 +995,28 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        /** Format: email */
-                        email: string;
-                        /** Format: password */
-                        password: string;
-                    };
+                    "application/json": components["schemas"]["AuthenticateRequest"];
                 };
             };
             responses: {
-                /** @description JWT Response */
+                /** @description JWT access token. */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
                         "application/json": {
-                            access_token?: string;
+                            /** @description Signed JWT carrying customerId, roles and email. */
+                            accessToken: string;
                         };
                     };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                423: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/auth/{email}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Check if an email exists prior to attempting registration flows. */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    email: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Email existence boolean */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -805,7 +1032,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register a new customer profile. */
+        /**
+         * Register a new customer account.
+         * @description Creates a customer profile with a hashed password. Emails are lowercased; duplicate
+         *     registration yields `CUSTOMER_ALREADY_EXISTS`. The response contains only public
+         *     profile data.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -815,24 +1047,22 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        first_name: string;
-                        last_name: string;
-                        /** Format: email */
-                        email: string;
-                        /** Format: password */
-                        password: string;
-                    };
+                    "application/json": components["schemas"]["RegisterCustomerRequest"];
                 };
             };
             responses: {
-                /** @description Customer Object */
-                200: {
+                /** @description Customer profile created. */
+                201: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Customer"];
+                    };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -848,7 +1078,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Retrieve the currently authenticated customer profile. */
+        /** Retrieve the authenticated customer's public profile. */
         get: {
             parameters: {
                 query?: never;
@@ -858,13 +1088,17 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Customer Object */
+                /** @description Customer DTO (no backend-private fields). */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Customer"];
+                    };
                 };
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         put?: never;
@@ -884,8 +1118,145 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Explicitly revoke the active JWT to terminate the session securely via Redis Denylist. */
+        /**
+         * Revoke the current session via the token denylist.
+         * @description Revokes the presented JWT (Redis denylist). Supports revoking a single token or all
+         *     sessions for a user.
+         */
         post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @default MANUAL_REVOCATION */
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Session(s) revoked. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/password-reset/initiate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Initiate a password reset.
+         * @description Issues a single-use reset token (default 1h TTL) and emails it. Always succeeds for
+         *     unknown emails to prevent enumeration.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InitiatePasswordResetRequest"];
+                };
+            };
+            responses: {
+                /** @description Reset email dispatched (or suppressed for unknown accounts). */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/password-reset/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete a password reset with the emailed token.
+         * @description Verifies the token (including token-id and hash match), re-hashes the password,
+         *     bumps the security stamp and revokes all sessions. Invalid/expired tokens yield
+         *     `UNAUTHORIZED_ACCESS`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CompletePasswordResetRequest"];
+                };
+            };
+            responses: {
+                /** @description Password updated and sessions revoked. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/me/addresses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the authenticated customer's address book. */
+        get: {
             parameters: {
                 query?: never;
                 header?: never;
@@ -894,13 +1265,344 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Session terminated */
+                /** @description Address list. */
                 200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Address"][];
+                    };
+                };
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        put?: never;
+        /** Add an address to the customer's address book. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AddressInput"];
+                };
+            };
+            responses: {
+                /** @description Address added. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/me/addresses/{address_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update an existing address book entry. */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    address_id: components["parameters"]["PathAddressId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AddressInput"];
+                };
+            };
+            responses: {
+                /** @description Address updated. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        post?: never;
+        /** Delete an address book entry. */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    address_id: components["parameters"]["PathAddressId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Address removed. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/me/business-units": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a B2B business unit.
+         * @description Creates a business unit and promotes the given customer to `COMPANY_ADMIN`.
+         *     Duplicate registration numbers or names yield `BUSINESS_UNIT_ALREADY_EXISTS`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateBusinessUnitRequest"];
+                };
+            };
+            responses: {
+                /** @description Business unit created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessUnit"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/me/quotes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a B2B quote for a cart.
+         * @description Snapshots the cart (truncated at 200KB), binds it to a business unit, and may freeze
+         *     the cart for the quoting period. The requesting customer must own the cart.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RequestQuoteRequest"];
+                };
+            };
+            responses: {
+                /** @description Quote request accepted. */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/quotes/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a pending B2B quote.
+         * @description Approves a `PENDING_APPROVAL` quote with an approved total in minor units. Any other
+         *     status yields `INVALID_STATE`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApproveQuoteRequest"];
+                };
+            };
+            responses: {
+                /** @description Quote approved. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/me/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieve the authenticated customer's paginated order history. */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                    offset?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Paginated order history. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["Order"][];
+                            total: number;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/customers/me/erasure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request GDPR/CCPA data erasure for the authenticated customer.
+         * @description Anonymizes all personal data, revokes all sessions and records the erasure reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @default DATA_ERASURE_REQUEST */
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Customer data anonymized. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -916,7 +1618,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Retrieve comprehensive, immutable order details. */
+        /** Retrieve an immutable order with line items and fulfilment state. */
         get: {
             parameters: {
                 query?: never;
@@ -928,13 +1630,18 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description Order Object */
+                /** @description Order DTO. */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["Order"];
+                    };
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         put?: never;
@@ -945,41 +1652,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/store/orders/customer": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List paginated historical orders tied strictly to the authenticated customer session. */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Array of Orders */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/returns": {
+    "/store/orders/{id}/returns": {
         parameters: {
             query?: never;
             header?: never;
@@ -988,105 +1661,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Initiate a return authorization, computing accurate prorated refunds. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        /** Format: uuid */
-                        order_id: string;
-                        items: {
-                            /** Format: uuid */
-                            item_id: string;
-                            quantity: number;
-                            reason_code?: string;
-                        }[];
-                    };
-                };
-            };
-            responses: {
-                /** @description Return Authorization Object */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/swaps": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create an exchange workflow, calculating price variances. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": {
-                        /** Format: uuid */
-                        order_id: string;
-                        return_items: {
-                            /** Format: uuid */
-                            item_id?: string;
-                            quantity?: number;
-                        }[];
-                        additional_items: {
-                            /** Format: uuid */
-                            variant_id?: string;
-                            quantity?: number;
-                        }[];
-                    };
-                };
-            };
-            responses: {
-                /** @description Swap Object */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/order-edits/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Request administrative modifications to an existing, unfulfilled order. */
+        /**
+         * Initiate a return authorization with prorated refund calculation.
+         * @description Validates each item and quantity against the fulfilled order, computes the prorated
+         *     refund (`refundAmountMinor`), and optionally creates a return label. Missing items or
+         *     excessive quantities yield `INVALID_RETURN_ITEM` / `INVALID_RETURN_QUANTITY`.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -1098,22 +1678,1041 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": {
-                        action_type: string;
-                        /** Format: uuid */
-                        line_item_id: string;
-                        quantity: number;
-                    };
+                    "application/json": components["schemas"]["ReturnRequest"];
                 };
             };
             responses: {
-                /** @description Order Edit Object */
+                /** @description Return authorization created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ReturnAuthorization"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/orders/{id}/swaps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Process an order swap and compute the price variance.
+         * @description Computes the signed variance between the returned line value and the replacement
+         *     variant. Positive variance requires payment (`PAYMENT_REQUIRED` with a payment URL),
+         *     negative variance dispatches a refund, zero is an even exchange.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SwapRequest"];
+                };
+            };
+            responses: {
+                /** @description Swap processed. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Swap"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/orders/{id}/edits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose an edit to an unfulfilled order.
+         * @description Computes the monetary difference of the proposed changes (`differenceDueMinor`).
+         *     Unfulfilled orders only — fulfilled orders yield `ORDER_ALREADY_FULFILLED`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ProposeOrderEditRequest"];
+                };
+            };
+            responses: {
+                /** @description Order edit proposed. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OrderEdit"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/order-edits/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a proposed order edit.
+         * @description When the edit increases the order total, payment must be confirmed first
+         *     (`PAYMENT_REQUIRED`). Applies the confirmed edits to the live order. Idempotent —
+         *     already-confirmed edits return their current status.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ConfirmOrderEditRequest"];
+                };
+            };
+            responses: {
+                /** @description Order edit confirmed. */
                 200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            orderId: string;
+                            /** Format: uuid */
+                            orderEditId: string;
+                            /** @example applied */
+                            status: string;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                402: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/orders/{id}/fulfillments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dispatch an order and request a shipping label.
+         * @description Requests a label from the logistics provider, records the fulfilment with tracking
+         *     information, and transitions the order to `fulfilled`. Only `unfulfilled` or
+         *     `ready_for_dispatch` orders may be dispatched (`INVALID_STATE`).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["DispatchFulfillmentRequest"];
+                };
+            };
+            responses: {
+                /** @description Order dispatched. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content?: never;
                 };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/webhooks/courier-tracking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Courier tracking status webhook.
+         * @description Accepts tracking events, updates the matching fulfilment, and optionally notifies the
+         *     customer. Unknown tracking numbers are ignored idempotently; out-of-order events are
+         *     dropped.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CourierTrackingWebhook"];
+                };
+            };
+            responses: {
+                /** @description Tracking event processed (or ignored). */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a product.
+         * @description Normalizes and validates the handle (`^[a-z0-9-_]+$`, length 2–100). A handle conflict
+         *     yields `INVALID_OPERATION`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateProductRequest"];
+                };
+            };
+            responses: {
+                /** @description Product created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Product"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/products/{id}/variants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a product variant.
+         * @description SKU is normalized to uppercase and must match `^[A-Z0-9-_]+$`. Inventory is bounded
+         *     (0..1,000,000,000). Duplicate SKUs yield `INVALID_OPERATION`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateProductVariantRequest"];
+                };
+            };
+            responses: {
+                /** @description Variant created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProductVariant"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/variants/{id}/inventory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adjust a variant's inventory to an absolute level.
+         * @description Requires `inventory.adjust` permission. Sets the absolute inventory quantity (integer,
+         *     0..1,000,000,000) and audits the adjustment with a reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AdjustInventoryRequest"];
+                };
+            };
+            responses: {
+                /** @description Inventory adjusted. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/variants/{id}/regional-prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure a regional price for a variant.
+         * @description Amounts are integers in minor units (0..100,000,000,000). Creating a price for a
+         *     variant/region pair that already has one yields `INVALID_OPERATION`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ConfigureRegionalPricingRequest"];
+                };
+            };
+            responses: {
+                /** @description Regional price configured. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/tax-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure a tax category for a region.
+         * @description Rate is expressed in basis points (0..10,000; e.g. 750 = 7.5%). Duplicate names within
+         *     a region yield `INVALID_OPERATION`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ConfigureTaxCategoryRequest"];
+                };
+            };
+            responses: {
+                /** @description Tax category configured. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/promotions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a promotion rule.
+         * @description Code is normalized to uppercase (`^[A-Z0-9-_]+$`). Percentage discounts are bounded to
+         *     10,000 basis points; fixed amounts to 1,000,000,000 minor units. Duplicate codes yield
+         *     `INVALID_OPERATION`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreatePromotionRequest"];
+                };
+            };
+            responses: {
+                /** @description Promotion created. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/sales-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a sales channel.
+         * @description Name is required (max 200 chars) and description optional (max 2000 chars). A channel
+         *     colliding with an existing unique constraint yields `INVALID_OPERATION`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateSalesChannelRequest"];
+                };
+            };
+            responses: {
+                /** @description Sales channel created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SalesChannel"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a product category.
+         * @description Name is required (max 200 chars). An optional parent category must exist and cannot
+         *     self-reference.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateCategoryRequest"];
+                };
+            };
+            responses: {
+                /** @description Category created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Category"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/roles/{id}/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace the permission set of an admin role.
+         * @description Permissions are lowercased, de-duplicated and must match `^[a-z0-9]+:[a-z0-9-]+$`
+         *     (e.g. `read:products`).
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ManageRolePermissionsRequest"];
+                };
+            };
+            responses: {
+                /** @description Role permissions updated. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/imports/bulk-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enqueue a bulk catalogue import job.
+         * @description Accepts an HTTP(S) file URL and optional file type (`csv`|`json`), then schedules a
+         *     background import job. Returns the generated job id.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BulkImportRequest"];
+                };
+            };
+            responses: {
+                /** @description Import job scheduled. */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            jobId: string;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/queues/{queue_name}/dead-letter": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List dead-letter jobs for a queue. */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                    offset?: number;
+                };
+                header?: never;
+                path: {
+                    queue_name: components["parameters"]["PathQueueName"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Dead-letter jobs. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DeadLetterJob"][];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/queues/{queue_name}/dead-letter/{job_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry a dead-letter job. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    queue_name: components["parameters"]["PathQueueName"];
+                    job_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Job re-queued for processing. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/draft-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate a draft order and optionally email an invoice.
+         * @description Creates a snapshot draft order (`awaiting_payment`) with an explicit total in minor
+         *     units. Requires an admin id. Duplicate snapshots yield `DUPLICATE_DRAFT_ORDER`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DraftOrderRequest"];
+                };
+            };
+            responses: {
+                /** @description Draft order created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            draftOrderId: string;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/sourcing-location": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Determine the optimal sourcing location for a variant.
+         * @description Resolves the optimal fulfilment node for a variant/quantity given customer
+         *     coordinates. May split across locations when allowed. Yields `OUT_OF_STOCK` when no
+         *     location can serve the quantity.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SourcingRequest"];
+                };
+            };
+            responses: {
+                /** @description Optimal sourcing location. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            locationId: string;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/carts/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prune abandoned carts older than a threshold.
+         * @description System maintenance operation. Deletes carts whose last activity predates the given
+         *     threshold and returns the number deleted.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: date-time
+                         * @description Carts older than this timestamp are removed.
+                         */
+                        expirationDateThreshold: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Pruned abandoned carts. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletedCount: number;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/maintenance/stale-transactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Terminate stale database transactions.
+         * @description System maintenance operation. Terminates transactions older than the given stale
+         *     threshold (ms, clamped 0..3,600,000).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @default 30000 */
+                        staleThresholdMs?: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Terminated stale transactions. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            terminatedCount: number;
+                        };
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
             };
         };
         delete?: never;
@@ -1127,67 +2726,805 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         StandardError: {
-            /** @example false */
-            success: boolean;
+            /** @constant */
+            success: false;
             error: {
-                /** @example INVALID_SIGNATURE */
-                code: string;
-                /** @example Cryptographic signature verification failed. */
+                /**
+                 * @example OUT_OF_STOCK
+                 * @enum {string}
+                 */
+                code: "VALIDATION_ERROR" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
+                /** @example Requested quantity exceeds available inventory. */
                 message: string;
                 details?: {
                     [key: string]: unknown;
                 };
             };
         };
-        Price: {
-            amount: number;
-            /** @example ngn */
-            currency_code: string;
-        };
-        ProductVariant: {
-            /** Format: uuid */
-            id: string;
-            sku: string;
-            inventory_quantity: number;
-            /** @example false */
-            allow_backorder: boolean;
-            prices: components["schemas"]["Price"][];
-        };
+        /** @description Public product DTO (no backend-private catalogue state). */
         Product: {
             /** Format: uuid */
             id: string;
             title: string;
             handle: string;
-            description?: string;
-            options?: {
-                [key: string]: unknown;
-            }[];
-            variants: components["schemas"]["ProductVariant"][];
+            description?: string | null;
+            variants?: components["schemas"]["ProductVariant"][];
         };
+        /** @description Product variant DTO with inventory and backorder flag. */
+        ProductVariant: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            productId: string;
+            sku: string;
+            inventoryQuantity: number;
+            /** @description When true, the variant may be oversold against inventory. */
+            allowBackorder: boolean;
+            /** @description Optimistic-lock version, incremented on every inventory change. */
+            version: number;
+        };
+        ProductList: {
+            items: components["schemas"]["Product"][];
+            /** @description Total number of products matching the query. */
+            total: number;
+        };
+        VariantAvailability: {
+            /** Format: uuid */
+            variantId: string;
+            inventoryQuantity: number;
+            allowBackorder: boolean;
+            /** @description Regional price in minor units; null when no regional price exists. */
+            priceMinor: number | null;
+        };
+        Category: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            parentCategoryId?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        Collection: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+        };
+        /** @description Cart session DTO including computed totals and applied promotion. */
+        Cart: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            regionId: string;
+            /** Format: uuid */
+            salesChannelId: string;
+            /** Format: uuid */
+            customerId?: string | null;
+            /** Format: email */
+            email?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+            /** @example NG */
+            countryCode?: string | null;
+            /** @example NGN */
+            currency?: string;
+            shippingAddress?: components["schemas"]["ShippingAddress"];
+            /** @description Applied tax in minor units; null before tax is calculated. */
+            taxAmountMinor?: number | null;
+            /** @description Arbitrary JSONB metadata attached to the cart. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            frozen?: boolean;
+            frozenReason?: string | null;
+            /** Format: date-time */
+            frozenAt?: string | null;
+            /** Format: uuid */
+            orderId?: string | null;
+            /** Format: date-time */
+            convertedAt?: string | null;
+            /** @enum {string} */
+            status: "active" | "converted";
+            /** @enum {string} */
+            paymentStatus?: "pending" | "initialized" | "paid";
+            paymentInitialized?: boolean;
+            paymentAuthorizationUrl?: string | null;
+            /** Format: date-time */
+            paymentInitializedAt?: string | null;
+            /** @description Sum of all line-item totals in minor units. */
+            cartTotalMinor: number;
+            items: components["schemas"]["CartLineItem"][];
+            appliedPromotion?: components["schemas"]["AppliedPromotion"];
+        };
+        /** @description A single cart line item. Variant items reference a variant; custom (B2B) items carry a title and client-supplied unit price instead. */
         CartLineItem: {
             /** Format: uuid */
             id: string;
             /** Format: uuid */
-            variant_id: string;
+            cartId: string;
+            /** Format: uuid */
+            variantId?: string | null;
+            /** @description Required for custom items. */
+            title?: string | null;
+            quantity: number;
+            /** @description Unit price in minor units. */
+            unitPriceMinor: number;
+            /** @description Computed unitPriceMinor * quantity in minor units. */
+            lineTotalMinor?: number;
+            /** @description Arbitrary JSONB metadata attached to the line item. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            createdAt: string;
+        };
+        /** @description Promotion projection attached to a cart (only id and code are exposed). */
+        AppliedPromotion: {
+            /** Format: uuid */
+            id: string;
+            code: string;
+        };
+        /** @description Checkout shipping address. Stored as JSONB; unknown keys are preserved. */
+        ShippingAddress: {
+            firstName?: string;
+            lastName?: string;
+            phone?: string;
+            company?: string;
+            line1?: string;
+            line2?: string;
+            city?: string;
+            state?: string;
+            postalCode?: string;
+            /** @example NG */
+            countryCode?: string;
+            /** @default false */
+            isBusiness: boolean;
+            metadata?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Logistics quote returned by the provider (e.g. Shipbubble). */
+        ShippingQuote: {
+            /** Format: uuid */
+            id?: string;
+            /** @example standard */
+            serviceLevel?: string;
+            /** @description Quote amount in minor units. */
+            amountMinor?: number;
+            /** @example NGN */
+            currency?: string;
+            etaDays?: number;
+        };
+        InsuranceQuoteResponse: {
+            /** @description Insurance premium in minor units. */
+            premiumMinor: number;
+        };
+        PaymentSessionResponse: {
+            /**
+             * Format: uri
+             * @description Hosted payment authorization URL returned by the gateway.
+             */
+            authorizationUrl: string;
+        };
+        /** @description Immutable order DTO with fulfilment and payment state. */
+        Order: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            cartId: string;
+            /** Format: uuid */
+            customerId: string;
+            /** @description Captured order total in minor units (Kobo). */
+            totalAmountMinor: number;
+            /** @enum {string} */
+            fulfillmentStatus: "unfulfilled" | "ready_for_dispatch" | "partially_fulfilled" | "fulfilled" | "returned" | "on_hold";
+            /** @enum {string} */
+            paymentStatus: "pending" | "captured" | "failed" | "requires_action" | "on_hold";
+            transactionReference?: string | null;
+            paymentStatusReason?: string | null;
+            /** Format: date-time */
+            paymentStatusUpdatedAt?: string | null;
+            flaggedForReview?: boolean;
+            flagReason?: string | null;
+            riskScore?: number | null;
+            /** Format: date-time */
+            flaggedAt?: string | null;
+            /** Format: date-time */
+            fulfillmentHaltedAt?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+            /** @description Arbitrary JSONB metadata attached to the order. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            lineItems?: components["schemas"]["OrderLineItem"][];
+            availableVariants?: {
+                /** Format: uuid */
+                id: string;
+                unitPriceMinor: number;
+            }[];
+            fulfillments?: components["schemas"]["Fulfillment"][];
+            pendingReturns?: {
+                [key: string]: unknown;
+            }[];
+        };
+        OrderLineItem: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            variantId?: string | null;
+            quantity: number;
+            unitPriceMinor: number;
+            fulfilledQuantity?: number | null;
+        };
+        /** @description Captured payment transaction linked to an order. */
+        Transaction: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            orderId: string;
+            /** @description Gateway transaction reference. */
+            reference: string;
+            amountMinor: number;
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        /** @description Shipping fulfilment record attached to an order. */
+        Fulfillment: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            orderId: string;
+            trackingNumber: string;
+            courier?: string;
+            labelUrl?: string | null;
+            serviceLevel?: string | null;
+            /** @enum {string} */
+            status: "pending_dispatch" | "in_transit" | "out_for_delivery" | "delivered" | "delivery_failed";
+            /** Format: date-time */
+            createdAt?: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description Public customer profile. Backend-private fields are never exposed. */
+        Customer: {
+            /** Format: uuid */
+            id: string;
+            firstName: string;
+            lastName: string;
+            /** Format: email */
+            email: string;
+            /** Format: uuid */
+            activeCartId?: string | null;
+            /** Format: date-time */
+            registeredAt?: string;
+            phone?: string | null;
+            addresses?: components["schemas"]["Address"][];
+            disabled?: boolean;
+            roles?: string[];
+            /** @description Arbitrary JSONB metadata attached to the customer. */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description Address book entry. Stored as JSONB; unknown keys are preserved. */
+        Address: {
+            /** Format: uuid */
+            id: string;
+            firstName?: string;
+            lastName?: string;
+            phone?: string;
+            company?: string;
+            line1?: string;
+            line2?: string;
+            city?: string;
+            state?: string;
+            postalCode?: string;
+            /** @example NG */
+            countryCode?: string;
+            /** @default false */
+            isDefault: boolean;
+            metadata?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description B2B business unit with its members. */
+        BusinessUnit: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            registrationNumber: string;
+            /** Format: uuid */
+            salesChannelId: string;
+            members: {
+                /** Format: uuid */
+                customerId: string;
+                /** @enum {string} */
+                role: "COMPANY_ADMIN";
+            }[];
+            /** Format: date-time */
+            createdAt: string;
+        };
+        /** @description B2B quote request attached to a business unit. */
+        Quote: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            cartId: string;
+            /** @description Serialized cart snapshot (truncated at 200KB). */
+            cartSnapshotJson?: string;
+            /** Format: uuid */
+            businessUnitId: string;
+            /** Format: uuid */
+            requestedByCustomerId: string;
+            /** Format: date-time */
+            requestedAt: string;
+            /** @enum {string} */
+            status: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+            notes?: string | null;
+            /** @description Approved total in minor units; set on approval. */
+            approvedTotalMinor?: number | null;
+            /** Format: uuid */
+            approvedBy?: string | null;
+            /** Format: date-time */
+            approvedAt?: string | null;
+            approvalNote?: string | null;
+        };
+        /** @description Return authorization (RMA) with prorated refund. */
+        ReturnAuthorization: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            orderId: string;
+            items?: {
+                /** Format: uuid */
+                lineItemId: string;
+                quantity: number;
+                reasonCode: string;
+            }[];
+            /** @description Prorated refund in minor units. */
+            refundAmountMinor: number;
+            shippingLabelUrl?: string | null;
+            /** @enum {string} */
+            status: "pending_receipt";
+            /** Format: uuid */
+            requestedByCustomerId?: string | null;
+            createdBy?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description Swap processing result including the signed price variance. */
+        Swap: {
+            /** Format: uuid */
+            swapId: string;
+            /** Format: uuid */
+            orderId?: string;
+            /** Format: uuid */
+            returnLineItemId?: string;
+            returnQuantity?: number;
+            /** Format: uuid */
+            newVariantId?: string;
+            newVariantPriceMinor?: number;
+            originalValueMinor?: number;
+            /** @description Signed variance in minor units (positive = customer owes). */
+            variance: number;
+            /** @enum {string} */
+            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
+            /** Format: uri */
+            paymentUrl?: string | null;
+            /** @enum {string} */
+            status?: "even_exchange" | "awaiting_payment" | "refund_dispatched" | "refund_pending_manual";
+            /** Format: date-time */
+            createdAt?: string;
+            paymentReference?: string | null;
+        };
+        /** @description Proposed or confirmed edit to an unfulfilled order. */
+        OrderEdit: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            orderId: string;
+            /** @example proposed_edit */
+            actionType: string;
+            reason?: string | null;
+            /** @enum {string} */
+            status: "draft" | "proposed" | "confirmed" | "applied";
+            /** @description Signed monetary difference in minor units (positive = customer owes). */
+            differenceDueMinor?: number;
+            proposedChanges?: {
+                /** @enum {string} */
+                type: "add" | "remove" | "update";
+                /** Format: uuid */
+                lineItemId?: string | null;
+                /** Format: uuid */
+                newVariantId?: string | null;
+                quantity: number;
+                unitPriceMinor?: number;
+            }[];
+            /** Format: date-time */
+            confirmedAt?: string | null;
+            /** Format: uuid */
+            confirmedBy?: string | null;
+            paymentReference?: string | null;
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        /** @description Failed background job surfaced for inspection and retry. */
+        DeadLetterJob: {
+            id: string;
+            name?: string;
+            data?: {
+                [key: string]: unknown;
+            };
+            failedReason?: string;
+            attemptsMade?: number;
+            timestamp?: string | null;
+            failedAt?: string | null;
+        };
+        /** @description Administrative draft order awaiting payment. */
+        DraftOrder: {
+            /** Format: uuid */
+            id: string;
+            /** Format: email */
+            email: string;
+            items: {
+                title: string;
+                quantity: number;
+                unitPriceMinor: number;
+            }[];
+            shippingAddress?: {
+                [key: string]: unknown;
+            };
+            /** @description Draft order total in minor units. */
+            totalMinor: number;
+            /** @enum {string} */
+            status: "awaiting_payment";
+            createdBy?: string;
+            /** Format: date-time */
+            createdAt?: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        SalesChannel: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            description?: string | null;
+            isDisabled: boolean;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        Region: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @example NGN */
+            currencyCode: string;
+            /** @description Tax rate in basis points. */
+            taxRate: number;
+            paymentProviders?: string[];
+            fulfillmentProviders?: string[];
+        };
+        TaxCategory: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            regionId: string;
+            name: string;
+            /** @description Tax rate in basis points (e.g. 750 = 7.5%). */
+            rate: number;
+        };
+        /** @description Promotion rule used for discount codes. */
+        Promotion: {
+            /** Format: uuid */
+            id: string;
+            code: string;
+            /** @enum {string} */
+            discountType: "percentage" | "fixed_amount";
+            /** @description Percentage discounts use basis points; fixed amounts use minor units. */
+            discountValueMinor: number;
+            /** @description Minimum cart spend in minor units required to apply the code. */
+            minimumSpendMinor: number;
+            isActive: boolean;
+        };
+        InitializeCartRequest: {
+            /** Format: uuid */
+            regionId: string;
+            /** Format: uuid */
+            salesChannelId: string;
+            /** Format: email */
+            email?: string;
+            /** @description ISO 3166-1 alpha-2 country code, uppercased. */
+            countryCode?: string;
+        };
+        AddLineItemRequest: {
+            /** Format: uuid */
+            variantId: string;
             quantity: number;
             metadata?: {
                 [key: string]: unknown;
             };
         };
-        Cart: {
+        AddCustomLineItemRequest: {
+            title: string;
+            quantity: number;
+            /** @description Custom unit price in minor units. */
+            unitPriceMinor: number;
+        };
+        UpdateLineItemQuantityRequest: {
+            quantity: number;
+        };
+        ApplyDiscountRequest: {
+            /** @description Promotion code; case-insensitive and uppercased server-side. */
+            code: string;
+        };
+        MergeGuestCartRequest: {
             /** Format: uuid */
-            id: string;
+            guestCartId: string;
             /** Format: uuid */
-            region_id: string;
+            customerId: string;
+        };
+        SetShippingAddressRequest: {
+            shippingAddress: components["schemas"]["ShippingAddress"];
+        };
+        PaymentSessionRequest: {
+            /**
+             * Format: uri
+             * @description Optional redirect URL hint forwarded to the payment gateway.
+             */
+            returnUrl?: string;
+        };
+        WebhookPaymentFinalizeRequest: {
             /** Format: uuid */
-            sales_channel_id?: string;
+            cartId: string;
+            /** @description Gateway transaction reference; used as the idempotency key. */
+            transactionReference: string;
+            /** @description Amount captured by the gateway in minor units; must equal the cart total. */
+            amountPaidMinor: number;
+        };
+        SubmitReviewRequest: {
+            rating: number;
+            comment?: string;
+        };
+        AuthenticateRequest: {
             /** Format: email */
-            email?: string;
-            items: components["schemas"]["CartLineItem"][];
+            email: string;
+            /** Format: password */
+            password: string;
+        };
+        RegisterCustomerRequest: {
+            firstName: string;
+            lastName: string;
+            /** Format: email */
+            email: string;
+            /** Format: password */
+            password: string;
+            /**
+             * Format: uuid
+             * @description Optional B2B business unit to associate on registration.
+             */
+            businessUnitId?: string;
+        };
+        InitiatePasswordResetRequest: {
+            /** Format: email */
+            email: string;
+        };
+        CompletePasswordResetRequest: {
+            /** @description Single-use reset token from the email. */
+            resetToken: string;
+            /** Format: password */
+            newPassword: string;
+        };
+        AddressInput: {
+            firstName?: string;
+            lastName?: string;
+            phone?: string;
+            company?: string;
+            line1?: string;
+            line2?: string;
+            city?: string;
+            state?: string;
+            postalCode?: string;
+            /** @example NG */
+            countryCode?: string;
+            /** @default false */
+            isDefault: boolean;
+            metadata?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        CreateBusinessUnitRequest: {
+            unitName: string;
+            /** Format: uuid */
+            adminCustomerId: string;
+            companyRegistrationNumber: string;
+            /** Format: uuid */
+            salesChannelId: string;
+        };
+        RequestQuoteRequest: {
+            /** Format: uuid */
+            cartId: string;
+            /** Format: uuid */
+            customerId: string;
+            /** Format: uuid */
+            businessUnitId: string;
+            customerNotes?: string;
+            /** @description When true, freezes the cart for the quoting period. */
+            freezeCart?: boolean;
+        };
+        ApproveQuoteRequest: {
+            /** @description Approved total in minor units. */
+            approvedTotalMinor: number;
+            approvalNote?: string;
+        };
+        ReturnRequest: {
+            /** Format: uuid */
+            orderId: string;
+            items: {
+                /** Format: uuid */
+                lineItemId: string;
+                quantity: number;
+                reasonCode: string;
+            }[];
+            /**
+             * @description When true, a return label is requested from the logistics provider.
+             * @default true
+             */
+            requireReturnLabel: boolean;
+        };
+        SwapRequest: {
+            /** Format: uuid */
+            returnLineItemId: string;
+            returnQuantity: number;
+            /** Format: uuid */
+            newVariantId: string;
+            /** @description Replacement variant unit price in minor units. */
+            newVariantPriceMinor: number;
+            /**
+             * Format: uri
+             * @description Base URL for the payment redirect when variance requires payment.
+             */
+            paymentRedirectBaseUrl?: string;
+        };
+        ProposeOrderEditRequest: {
+            changes: {
+                /** @enum {string} */
+                type: "add" | "remove" | "update";
+                /** Format: uuid */
+                lineItemId?: string;
+                /** Format: uuid */
+                newVariantId?: string;
+                quantity: number;
+            }[];
+            /** @default ORDER_EDIT_PROPOSAL */
+            reason: string;
+        };
+        ConfirmOrderEditRequest: {
+            /** @description Must be true when the edit increases the order total. */
+            paymentConfirmed: boolean;
+            paymentReference?: string | null;
+        };
+        DispatchFulfillmentRequest: {
+            preferredCourier?: string;
+            serviceLevel?: string;
+        };
+        CourierTrackingWebhook: {
+            trackingNumber: string;
+            /**
+             * @description Raw courier status; unknown values pass through.
+             * @enum {string}
+             */
+            courierStatus: "in_transit" | "out_for_delivery" | "delivered" | "failed_attempt";
+            /** Format: date-time */
+            timestamp: string;
+            /** @default true */
+            notifyCustomer: boolean;
+        };
+        CreateProductRequest: {
+            title: string;
+            /** @description Normalized URL handle; lowercased server-side. */
+            handle: string;
+            description?: string;
+        };
+        CreateProductVariantRequest: {
+            /** @description Normalized to uppercase server-side. */
+            sku: string;
+            inventoryQuantity: number;
+            allowBackorder: boolean;
+        };
+        AdjustInventoryRequest: {
+            newInventoryQuantity: number;
+            /** @description Required for auditability. */
+            adjustmentReason: string;
+        };
+        ConfigureRegionalPricingRequest: {
+            /** Format: uuid */
+            regionId: string;
+            /** @description Regional price in minor units. */
+            amountMinor: number;
+        };
+        ConfigureTaxCategoryRequest: {
+            name: string;
+            /** Format: uuid */
+            regionId: string;
+            /** @description Tax rate in basis points (e.g. 750 = 7.5%). */
+            taxRateBasisPoints: number;
+        };
+        CreatePromotionRequest: {
+            /** @description Normalized to uppercase server-side. */
+            code: string;
+            /** @enum {string} */
+            discountType: "percentage" | "fixed_amount";
+            /** @description Percentage discounts bounded to 10,000 basis points. */
+            discountValueMinor: number;
+            minimumSpendMinor?: number;
+        };
+        CreateSalesChannelRequest: {
+            name: string;
+            description?: string;
+            /** @default false */
+            isDisabled: boolean;
+        };
+        CreateCategoryRequest: {
+            name: string;
+            /**
+             * Format: uuid
+             * @description Parent category; must exist and cannot reference the new category.
+             */
+            parentCategoryId?: string;
+        };
+        ManageRolePermissionsRequest: {
+            permissions: string[];
+        };
+        BulkImportRequest: {
+            /**
+             * Format: uri
+             * @description HTTP(S) URL of the CSV or JSON import file.
+             */
+            fileUrl: string;
+            /** @enum {string} */
+            fileType?: "csv" | "json";
+        };
+        DraftOrderRequest: {
+            /** Format: email */
+            email: string;
+            items: {
+                title: string;
+                quantity: number;
+                unitPriceMinor: number;
+            }[];
+            shippingAddress: {
+                [key: string]: unknown;
+            };
+            adminId: string;
+            /** @default true */
+            sendInvoice: boolean;
+        };
+        SourcingRequest: {
+            /** Format: uuid */
+            variantId: string;
+            requestedQuantity: number;
+            customerCoordinates?: {
+                lat: number;
+                lng: number;
+            };
+            /** @description When true, fulfilment may be split across multiple locations. */
+            allowSplitAcrossLocations?: boolean;
         };
     };
     responses: {
-        /** @description Standardized error envelope mapped across all non-200 HTTP routes. */
+        /** @description Standardized error envelope used by every non-2xx response. */
         StandardErrorResponse: {
             headers: {
                 [name: string]: unknown;
@@ -1199,8 +3536,16 @@ export interface components {
     };
     parameters: {
         PathId: string;
+        PathAddressId: string;
+        PathQueueName: string;
+        /** @description Scopes catalogue reads to a specific sales channel. */
         SalesChannelHeader: string;
+        /** @description Scopes catalogue reads to a specific region (currency, tax, pricing). */
         RegionHeader: string;
+        /** @description Comma-separated nested relations to expand (e.g. `variants,options`). */
+        ExpandQuery: string;
+        /** @description Comma-separated subset of fields to project (e.g. `id,title,thumbnail`). */
+        FieldsQuery: string;
     };
     requestBodies: never;
     headers: never;

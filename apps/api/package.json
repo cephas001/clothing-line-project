@@ -4,13 +4,31 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "prism mock -d openapi.yaml -p 4010"
+    "dev": "prism mock -d openapi.yaml -p 4010",
+    "dev:express": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "@stoplight/prism-cli": "^5.16.0"
+    "@stoplight/prism-cli": "^5.16.0",
+    "@types/express": "^5.0.6",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@types/yamljs": "^0.2.34",
+    "tsx": "^4.23.5"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "swagger-ui-express": "^5.0.1",
+    "yaml": "^2.9.0",
+    "yamljs": "^0.3.0"
+  },
+  "imports": {
+    "#domain/*": "./dist/domain/*.js",
+    "#use-cases/*": "./dist/use-cases/*.js",
+    "#infrastructure/*": "./dist/infrastructure/*.js",
+    "#adapters/*": "./dist/adapters/*.js"
   }
 }
