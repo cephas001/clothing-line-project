@@ -1,0 +1,19 @@
+// apps/api/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@api/*": ["./src/*"],
+      "@api-domain/*": ["./src/domain/*"],
+      "@api-domain-entities/*": ["./src/domain/entities/*"],
+      "@api-domain-errors/*": ["./src/domain/errors/*"],
+      "@api-domain-interfaces/*": ["./src/domain/interfaces/*"],
+      "@api-use-cases/*": ["./src/use-cases/*"],
+      "@api-infrastructure/*": ["./src/infrastructure/*"],
+      "@api-adapters/*": ["./src/adapters/*"]
+    }
+  },
+  "include": ["src"]
+}
