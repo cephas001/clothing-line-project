@@ -8,7 +8,7 @@ Guidance for AI tools and contributors working on this repository. Read this bef
 
 - `apps/api` — Backend domain logic written in **Clean Architecture / Domain-Driven Design**. Contains domain entities, repository/service interfaces, and all **use cases**. `apps/infrastructure`, `apps/adapters`, and `apps/storefront` are scaffolded but the domain + use-case layer of the API is the most mature, working part.
 - `apps/storefront` — Next.js (App Router) storefront (16, React 19, Tailwind v4).
-- `apps/worker` — Stubbed background job worker (not implemented).
+- `apps/worker` — Background-worker runtime. Reuses the API's domain/application/infrastructure code (via `@api/*` tsconfig aliases) and composes the BullMQ workers (`PaymentEventWorker`, `BulkCatalogImportWorker`). Workers contain no business logic; they invoke shared use cases.
 - `packages/shared-types` — Generated TypeScript types from the OpenAPI spec (via `openapi-typescript`). `main`/`types` point directly at `src/index.ts` (no build step).
 - `packages/config` — Empty placeholder.
 
@@ -31,8 +31,14 @@ pnpm stop
 # Typecheck the API (the only meaningful verification; must exit 0)
 pnpm --filter @clothing-line-project/api typecheck
 
+# Typecheck the worker runtime (imports the API via @api/* aliases)
+pnpm --filter @clothing-line-project/worker typecheck
+
 # Run the API use cases / domain only (Express server, if present)
 pnpm --filter @clothing-line-project/api dev:express
+
+# Run the worker runtime (consumes BullMQ queues; needs Redis + Postgres up)
+pnpm --filter @clothing-line-project/worker start
 
 # Mock the OpenAPI spec without any real backend
 pnpm --filter @clothing-line-project/api dev
@@ -41,15 +47,15 @@ pnpm --filter @clothing-line-project/api dev
 pnpm --filter @clothing-line-project/shared-types generate
 ```
 
-**Typechecking** is the primary validation gate for the domain layer. There is **no test framework configured** (worker and test scripts are stubs that `exit 1`). Verify logic by reasoning + `typecheck`, not `pnpm test`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` runs a Prism mock from it.
+**Typechecking** is the primary validation gate for the domain layer. There is **no test framework configured** (test scripts are stubs that `exit 1`). Verify logic by reasoning + `typecheck`, not `pnpm test`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` runs a Prism mock from it.
 
 ## Monorepo layout
 
 ```
 apps/
-  api/            # Domain + application layer (primary work area)
+  api/            # Domain + application layer (primary work area) + HTTP entry
   storefront/     # Next.js storefront
-  worker/         # Stubbed
+  worker/         # Background-worker runtime (consumes BullMQ queues)
 packages/
   config/         # Empty
   shared-types/   # openapi-typescript generated types (src/index.ts)
@@ -78,10 +84,20 @@ src/
   use-cases/
     admin/ cart/ catalog/ checkout/ customers/ logistics/
     # one file per use case, e.g. <Verb><Noun>UseCase.ts
-  infrastructure/             # EMPTY — put DB/adapters/infra here (not yet built)
+  infrastructure/             # Concrete adapters: Postgres/Kysely, Redis, services, observability, composition (HTTP runtime)
   adapters/                   # EMPTY — put controllers/HTTP adapters here
   utils/                      # handleUtils.ts, taxUtils.ts
 ```
+
+### Worker runtime (`apps/worker`)
+
+The background worker runtime lives in its own package and **imports** the API's
+shared code via `@api/*` tsconfig path aliases (`apps/worker/tsconfig.json` →
+`../api/src/*`). It must never duplicate a use case, repository, or service.
+It composes the BullMQ workers (`PaymentEventWorker`, `BulkCatalogImportWorker`)
+and its own composition root (`apps/worker/src/bootstrap.ts`). Workers start
+only on explicit `runtime.start()` from `apps/worker/src/index.ts` — never on
+import. Validate with `pnpm --filter @clothing-line-project/worker typecheck`.
 
 ### Guidelines
 
@@ -114,7 +130,7 @@ Next.js App Router under `apps/storefront/src/app`. Tailwind CSS v4 (`@tailwindc
 
 ## Rules for AI tools
 
-1. **Never guess test tooling** — use `pnpm --filter @clothing-line-project/api typecheck` to validate changes to `apps/api`.
+1. **Never guess test tooling** — use `pnpm --filter @clothing-line-project/api typecheck` to validate changes to `apps/api`, and `pnpm --filter @clothing-line-project/worker typecheck` for `apps/worker`.
 2. **Never add `runInTransaction` back** to repository interfaces; use `ITransactionManager`.
 3. **Don't violate Clean Architecture boundaries** — keep entities pure; use cases orchestrate through interfaces; put concrete DB/HTTP adapters under `infrastructure/` and `adapters/`.
 4. **Match existing conventions** — file-level header comments, JSDoc responsibility blocks, `I*Repository`/`I*Service` naming, import-base style per file, and error-code centralization in `DomainError.ts`.

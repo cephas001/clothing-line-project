@@ -1,0 +1,26 @@
+// apps/worker/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // No rootDir/outDir: this package has no emit step (tsx runs TS directly),
+    // and typechecking pulls in apps/api sources via the @api/* aliases below,
+    // which would violate a single-rooted output layout.
+    "paths": {
+      "@api/*": ["../api/src/*"],
+      "@api-domain/*": ["../api/src/domain/*"],
+      "@api-domain-entities/*": ["../api/src/domain/entities/*"],
+      "@api-domain-errors/*": ["../api/src/domain/errors/*"],
+      "@api-domain-interfaces/*": ["../api/src/domain/interfaces/*"],
+      "@api-use-cases/*": ["../api/src/use-cases/*"],
+      "@api-infrastructure/*": ["../api/src/infrastructure/*"],
+      "@api-adapters/*": ["../api/src/adapters/*"]
+    }
+  },
+  "include": [
+    "src",
+    // Ambient module declaration for import-in-the-middle, owned by apps/api.
+    // The worker entrypoint imports the shared instrumentation module, which
+    // requires this declaration at typecheck time.
+    "../api/src/infrastructure/observability/iitm-register-hooks.d.ts"
+  ]
+}
