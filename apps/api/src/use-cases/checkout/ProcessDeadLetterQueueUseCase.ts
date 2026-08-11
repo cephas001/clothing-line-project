@@ -9,6 +9,7 @@ import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+import { QUEUE_NAMES } from "@api/domain/shared/jobs";
 
 /**
  * Use case: process a job that has landed in the dead-letter queue (DLQ).
@@ -29,7 +30,7 @@ export interface ProcessDeadLetterQueueInput {
 }
 
 export class ProcessDeadLetterQueueUseCase {
-  private static readonly DEFAULT_QUEUE = "payment-events-queue";
+  private static readonly DEFAULT_QUEUE = QUEUE_NAMES.paymentEvents;
 
   constructor(
     private readonly queueService: IQueueService,

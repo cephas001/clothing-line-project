@@ -6,6 +6,7 @@ import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogServi
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { JsonObject } from "@api/domain/shared/json";
+import { QUEUE_NAMES } from "@api/domain/shared/jobs";
 import {
   RepositoryError,
   RepositoryErrorCode,
@@ -22,16 +23,17 @@ export interface QueuePaymentEventInput {
  *
  * Responsibilities:
  * - Validate inputs and enforce idempotency by using the transactionReference as the jobId.
- * - Provide sensible job options (retries, backoff, timeouts, removeOnComplete).
+ * - Provide sensible job options (retries, backoff, removeOnComplete).
+ *   Execution-time policies such as timeouts are worker concerns and are not
+ *   expressed as producer options here.
  * - Map adapter/repository errors to DomainError with clear domain codes.
  * - Emit a non-blocking audit log entry recording the enqueue attempt and outcome.
  * - Log structured events and failures for observability.
  */
 export class QueuePaymentEventUseCase {
-  private static readonly DEFAULT_QUEUE_NAME = "payment-events-queue";
+  private static readonly DEFAULT_QUEUE_NAME = QUEUE_NAMES.paymentEvents;
   private static readonly DEFAULT_ATTEMPTS = 5;
   private static readonly DEFAULT_BACKOFF_MS = 2000; // exponential backoff base
-  private static readonly DEFAULT_JOB_TIMEOUT_MS = 30_000; // 30s
 
   constructor(
     private readonly queueService: IQueueService,
@@ -70,7 +72,6 @@ export class QueuePaymentEventUseCase {
       },
       removeOnComplete: true,
       removeOnFail: false,
-      timeout: QueuePaymentEventUseCase.DEFAULT_JOB_TIMEOUT_MS,
       priority: "high",
     };
 

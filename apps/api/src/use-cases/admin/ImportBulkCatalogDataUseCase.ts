@@ -9,6 +9,7 @@ import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+import { QUEUE_NAMES } from "@api/domain/shared/jobs";
 
 /**
  * Input DTO for importing bulk catalog data.
@@ -110,7 +111,7 @@ export class ImportBulkCatalogDataUseCase {
     try {
       // queueService.enqueueJob may throw repository/queue-specific errors;
       // map them to DomainError below.
-      await this.queueService.enqueueJob("bulk-import-queue", payload);
+      await this.queueService.enqueueJob(QUEUE_NAMES.bulkCatalogImport, payload);
     } catch (err: any) {
       // If the queue layer exposes RepositoryError-like codes, handle common cases
       const repoErr = err as RepositoryError | undefined;

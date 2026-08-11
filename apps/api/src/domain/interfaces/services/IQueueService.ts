@@ -1,5 +1,21 @@
 // apps/api/src/domain/interfaces/services/IQueueService.ts
+
+/**
+ * Producer-controlled job options. This contract only represents capabilities
+ * the producer can actually control at enqueue time.
+ *
+ * Execution-time policies (e.g. a per-job execution timeout) are deliberately
+ * NOT represented here: they are enforced by workers at processing time, and a
+ * producer option for them would falsely imply the producer enforces them.
+ */
 export interface QueueJobOptions {
+  /**
+   * Explicit job identifier, used as an idempotency key. Supplying the same
+   * jobId for the same queue must not create a duplicate job (BullMQ treats an
+   * existing id as a no-op). The application decides what constitutes the
+   * idempotency key (e.g. a transaction reference).
+   */
+  jobId?: string;
   delayMs?: number;
   priority?: number | string;
   attempts?: number;
@@ -7,7 +23,6 @@ export interface QueueJobOptions {
     type: "fixed" | "exponential" | string;
     delayMs: number;
   };
-  timeoutMs?: number;
   removeOnComplete?: boolean;
   removeOnFail?: boolean;
 }
