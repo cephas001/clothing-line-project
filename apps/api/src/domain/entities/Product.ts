@@ -8,6 +8,8 @@ export interface ProductProps {
   handle: string;
   description?: string;
   variants?: ProductVariant[];
+  categoryIds?: string[];
+  salesChannelIds?: string[];
 }
 
 export class Product {
@@ -16,6 +18,8 @@ export class Product {
   private _handle: string;
   public description: string | null;
   private _variants: Map<string, ProductVariant>;
+  private _categoryIds: Set<string>;
+  private _salesChannelIds: Set<string>;
 
   constructor(props: ProductProps) {
     if (!props.title || props.title.trim() === "") {
@@ -42,6 +46,20 @@ export class Product {
         this._variants.set(variant.id, variant),
       );
     }
+
+    this._categoryIds = new Set();
+    if (props.categoryIds) {
+      props.categoryIds.forEach((id) => {
+        if (id && id.trim()) this._categoryIds.add(id);
+      });
+    }
+
+    this._salesChannelIds = new Set();
+    if (props.salesChannelIds) {
+      props.salesChannelIds.forEach((id) => {
+        if (id && id.trim()) this._salesChannelIds.add(id);
+      });
+    }
   }
 
   public addVariant(variant: ProductVariant): void {
@@ -64,5 +82,44 @@ export class Product {
 
   get variants(): ProductVariant[] {
     return Array.from(this._variants.values());
+  }
+
+  // --- Category / sales channel membership (many-to-many)
+  public assignCategories(categoryIds: string[]): void {
+    this._categoryIds = new Set(
+      (Array.isArray(categoryIds) ? categoryIds : []).filter(
+        (id) => typeof id === "string" && id.trim() !== "",
+      ),
+    );
+  }
+
+  public addCategory(categoryId: string): void {
+    if (!categoryId || !categoryId.trim()) {
+      throw new DomainError("VALIDATION_ERROR", "categoryId is required.");
+    }
+    this._categoryIds.add(categoryId);
+  }
+
+  public assignSalesChannels(salesChannelIds: string[]): void {
+    this._salesChannelIds = new Set(
+      (Array.isArray(salesChannelIds) ? salesChannelIds : []).filter(
+        (id) => typeof id === "string" && id.trim() !== "",
+      ),
+    );
+  }
+
+  public addSalesChannel(salesChannelId: string): void {
+    if (!salesChannelId || !salesChannelId.trim()) {
+      throw new DomainError("VALIDATION_ERROR", "salesChannelId is required.");
+    }
+    this._salesChannelIds.add(salesChannelId);
+  }
+
+  get categoryIds(): string[] {
+    return Array.from(this._categoryIds);
+  }
+
+  get salesChannelIds(): string[] {
+    return Array.from(this._salesChannelIds);
   }
 }

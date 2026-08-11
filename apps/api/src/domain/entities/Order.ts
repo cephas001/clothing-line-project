@@ -1,5 +1,6 @@
 // apps/api/src/domain/entities/Order.ts
 import { DomainError } from "@api/domain/entities/errors/DomainError";
+import { PromotionSnapshot } from "@api/domain/shared/contracts";
 import { JsonObject } from "@api/domain/shared/json";
 
 export type FulfillmentStatus =
@@ -53,6 +54,7 @@ export interface OrderProps {
   fulfillments?: JsonObject[];
   pendingReturns?: JsonObject[];
   createdAt?: string;
+  promotionSnapshot?: PromotionSnapshot | null;
 }
 
 export class Order {
@@ -75,6 +77,7 @@ export class Order {
   private _availableVariants: Array<{ id: string; unitPriceMinor: number }>;
   private _fulfillments: JsonObject[];
   private _pendingReturns: JsonObject[];
+  public promotionSnapshot: PromotionSnapshot | null;
 
   constructor(props: OrderProps) {
     if (!props.cartId || !props.customerId) {
@@ -116,6 +119,7 @@ export class Order {
     this._pendingReturns = props.pendingReturns
       ? [...props.pendingReturns]
       : [];
+    this.promotionSnapshot = props.promotionSnapshot ?? null;
   }
 
   // --- Fulfillment state machine
@@ -209,6 +213,17 @@ export class Order {
       quantity,
       returnedAt: new Date().toISOString(),
     });
+  }
+
+  // --- Promotion snapshot (historically immutable)
+  public recordPromotionSnapshot(snapshot: PromotionSnapshot): void {
+    if (!snapshot || !snapshot.promotionId || !snapshot.code) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Promotion snapshot must include promotionId and code.",
+      );
+    }
+    this.promotionSnapshot = snapshot;
   }
 
   // --- Financial helpers

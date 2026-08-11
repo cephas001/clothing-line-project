@@ -16,6 +16,8 @@ export interface CreateProductInput {
   title: string;
   handle: string;
   description?: string;
+  categoryIds?: string[];
+  salesChannelIds?: string[];
 }
 
 /**
@@ -85,6 +87,8 @@ export class CreateProductUseCase {
       title: input.title,
       handle: input.handle,
       description: input.description,
+      categoryIds: input.categoryIds,
+      salesChannelIds: input.salesChannelIds,
     });
 
     // Persist atomically via the transaction manager.

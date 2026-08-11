@@ -1,7 +1,5 @@
 import express from "express";
 import swaggerUi from "swagger-ui-express";
-import yaml from "yamljs";
-import path from "path";
 import fs from "fs";
 import YAML from "yaml";
 

@@ -1,6 +1,8 @@
 // apps/api/src/use-cases/logistics/InitiateReturnAuthorizationUseCase.ts
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
+import { Order } from "@api/domain/entities/Order";
+import { ReturnAuthorization } from "@api/domain/entities/ReturnAuthorization";
 import { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepository";
 import { IReturnRepository } from "@api/domain/interfaces/repositories/IReturnRepository";
 import { ILogisticsService } from "@api/domain/interfaces/services/ILogisticsService";
@@ -118,7 +120,7 @@ export class InitiateReturnAuthorizationUseCase {
     });
 
     // --- Load order
-    let order: any;
+    let order: Order | null = null;
     try {
       order = await this.orderRepository.findById(orderId);
     } catch (err: any) {
@@ -155,13 +157,16 @@ export class InitiateReturnAuthorizationUseCase {
       throw new DomainError("RESOURCE_NOT_FOUND", "Order not found.");
     }
 
+    // Capture the narrowed non-null aggregate for use inside the transaction closure.
+    const loadedOrder = order;
+
     // --- Validate each return item against order state and fulfilled quantities
     let refundTotalMinor = 0;
     try {
       for (const returnReq of items) {
-        const originalItem = Array.isArray(order.lineItems)
-          ? order.lineItems.find(
-              (i: any) => String(i.id) === String(returnReq.lineItemId),
+        const originalItem = Array.isArray(loadedOrder.lineItems)
+          ? loadedOrder.lineItems.find(
+              (i) => String(i.id) === String(returnReq.lineItemId),
             )
           : null;
         if (!originalItem) {
@@ -184,7 +189,7 @@ export class InitiateReturnAuthorizationUseCase {
         // Use order's domain method to compute prorated value
         let proratedItemValue = 0;
         proratedItemValue = Number(
-          order.calculateProratedValue(originalItem.id, requestedQty),
+          loadedOrder.calculateProratedValue(originalItem.id, requestedQty),
         );
 
         refundTotalMinor += Math.floor(proratedItemValue);
@@ -209,7 +214,7 @@ export class InitiateReturnAuthorizationUseCase {
     if (requireReturnLabel) {
       try {
         logisticsResponse = await this.logisticsService.createReturnLabel(
-          order,
+          loadedOrder.id,
           items,
         );
         if (!logisticsResponse || !logisticsResponse.url) {
@@ -258,12 +263,12 @@ export class InitiateReturnAuthorizationUseCase {
       }
     }
 
-    // --- Build RMA payload
+    // --- Build the return authorization aggregate
     const rmaId = this.idGenerator.generate();
     const nowIso = new Date().toISOString();
-    const rmaPayload: any = {
+    const returnAuthorization = new ReturnAuthorization({
       id: rmaId,
-      orderId: order.id,
+      orderId: loadedOrder.id,
       items: items.map((it) => ({
         lineItemId: it.lineItemId,
         quantity: Number(it.quantity),
@@ -272,7 +277,7 @@ export class InitiateReturnAuthorizationUseCase {
       refundAmountMinor: refundTotalMinor,
       shippingLabelUrl: returnLabelUrl,
       status: "pending_receipt",
-      requestedByCustomerId: requestedByCustomerId,
+      requestedByCustomerId: requestedByCustomerId ?? null,
       createdBy: actorId,
       createdAt: nowIso,
       metadata: {
@@ -280,19 +285,19 @@ export class InitiateReturnAuthorizationUseCase {
           ? { providerReference: logisticsResponse.providerReference ?? null }
           : null,
       },
-    };
+    });
 
     // --- Persist RMA (transactional)
     try {
       const work = async () => {
-        await this.returnRepository.save(rmaPayload);
+        await this.returnRepository.save(returnAuthorization);
 
         // Mark order lines as having pending returns via the domain method
-        for (const it of rmaPayload.items) {
-          order.markReturnPending(it.lineItemId, it.quantity);
+        for (const it of returnAuthorization.items) {
+          loadedOrder.markReturnPending(it.lineItemId, it.quantity);
         }
 
-        await this.orderRepository.save(order);
+        await this.orderRepository.save(loadedOrder);
       };
 
       await this.transactionManager.execute(work);

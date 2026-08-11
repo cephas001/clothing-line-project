@@ -12,6 +12,7 @@ import {
 } from "#domain/interfaces/shared/errors/RepositoryError";
 import { Cart } from "@api/domain/entities/Cart";
 import { ITransactionManager } from "#domain/interfaces/shared/ITransactionManager";
+import { IRegionRepository } from "#domain/interfaces/repositories/IRegionRepository";
 
 /**
  * Use case: initialize a payment session for a checkout cart.
@@ -38,6 +39,7 @@ export class InitializePaymentSessionUseCase {
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
+    private readonly regionRepository: IRegionRepository,
   ) {}
 
   async execute(input: InitializePaymentSessionInput): Promise<string> {
@@ -100,11 +102,17 @@ export class InitializePaymentSessionUseCase {
       );
     }
 
+    const region = await this.regionRepository.findById(cart.regionId);
+
+    if (!region) {
+      throw new DomainError("REGION_NOT_FOUND", "Region not found.");
+    }
+
     // --- Prepare gateway payload
     const gatewayPayload: Record<string, unknown> = {
       cartId: cartId,
       amountMinor: cartTotalMinor,
-      currency: cart.currency || "NGN",
+      currency: region.currencyCode,
       metadata: {
         cartId,
         auditId: this.idGenerator.generate(),
@@ -225,7 +233,7 @@ export class InitializePaymentSessionUseCase {
           cartId,
           authorizationUrl,
           amountMinor: String(cartTotalMinor),
-          currency: cart.currency || "NGN",
+          currency: region.currencyCode,
           initializedAt: new Date().toISOString(),
         },
       );

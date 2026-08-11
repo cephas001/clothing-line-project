@@ -4,6 +4,7 @@ import { ITransactionRepository } from "@api/domain/interfaces/repositories/ITra
 import { ICartRepository } from "@api/domain/interfaces/repositories/ICartRepository";
 import { Order } from "@api/domain/entities/Order";
 import { Cart } from "@api/domain/entities/Cart";
+import { PromotionSnapshot } from "@api/domain/shared/contracts";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
@@ -222,6 +223,20 @@ export class FinalizeOrderTransactionUseCase {
     const transactionId = this.idGenerator.generate();
     const nowIso = new Date().toISOString();
 
+    // Frozen financial snapshot of any promotion applied to the cart.
+    const promotion = cart.appliedPromotion;
+    let promotionSnapshot: PromotionSnapshot | null = null;
+    if (promotion) {
+      promotionSnapshot = {
+        promotionId: promotion.id,
+        code: promotion.code,
+        discountType: promotion.discountType,
+        discountValueMinor: promotion.discountValueMinor,
+        minimumSpendMinor: promotion.minimumSpendMinor,
+        appliedDiscountMinor: promotion.computeDiscountAmount(cartTotalMinor),
+      };
+    }
+
     const createWork = async () => {
       // Instantiate Order domain entity
       const order = new Order({
@@ -232,7 +247,17 @@ export class FinalizeOrderTransactionUseCase {
         fulfillmentStatus: "unfulfilled",
         paymentStatus: "captured",
         createdAt: nowIso,
+        lineItems: cart.items.map((item) => ({
+          id: item.id,
+          variantId: item.variantId ?? null,
+          quantity: item.quantity,
+          unitPriceMinor: item.unitPriceMinor,
+        })),
+        promotionSnapshot,
       });
+      if (promotionSnapshot) {
+        order.recordPromotionSnapshot(promotionSnapshot);
+      }
 
       // Persist order
       await this.orderRepository.save(order);

@@ -13,8 +13,8 @@ export interface CartProps {
   items?: CartLineItem[];
   appliedPromotion?: Promotion | null;
   createdAt?: string;
+  updatedAt?: string;
   countryCode?: string | null;
-  currency?: string;
   shippingAddress?: JsonObject | null;
   taxAmountMinor?: number | null;
   metadata?: JsonObject;
@@ -39,8 +39,8 @@ export class Cart {
   private _items: Map<string, CartLineItem>; // Mapped by Line Item ID for instant lookups
   private _appliedPromotion: Promotion | null;
   public createdAt: string;
+  public updatedAt: string;
   public countryCode: string | null;
-  public currency: string;
   public shippingAddress: JsonObject | null;
   public taxAmountMinor: number | null;
   public metadata: JsonObject;
@@ -69,8 +69,8 @@ export class Cart {
     this.customerId = props.customerId || null;
     this.email = props.email || null;
     this.createdAt = props.createdAt || new Date().toISOString();
+    this.updatedAt = props.updatedAt || new Date().toISOString();
     this.countryCode = props.countryCode || null;
-    this.currency = props.currency || "NGN";
     this.shippingAddress = props.shippingAddress || null;
     this.taxAmountMinor = props.taxAmountMinor ?? null;
     this.metadata = props.metadata || {};
@@ -98,6 +98,7 @@ export class Cart {
     // Higher-level application logic can decide whether adding the same
     // product variant should merge quantities or create a new line item.
     this._items.set(item.id, item);
+    this.touch();
   }
 
   public mergeItemsFrom(source: Cart, generateId: () => string): void {
@@ -118,6 +119,7 @@ export class Cart {
         this.addOrUpdateItem(sourceItem.copyForCart(generateId(), this.id));
       }
     }
+    this.touch();
   }
 
   public assignCustomer(customerId: string, email: string): void {
@@ -126,15 +128,18 @@ export class Cart {
     }
     this.customerId = customerId;
     this.email = email;
+    this.touch();
   }
 
   public setItems(items: CartLineItem[]): void {
     this._items.clear();
     items.forEach((item) => this._items.set(item.id, item));
+    this.touch();
   }
 
   public removeItem(lineItemId: string): void {
     this._items.delete(lineItemId);
+    this.touch();
   }
 
   get items(): CartLineItem[] {
@@ -173,10 +178,12 @@ export class Cart {
 
   applyDiscount(promotion: Promotion): void {
     this._appliedPromotion = promotion;
+    this.touch();
   }
 
   removeDiscount(): void {
     this._appliedPromotion = null;
+    this.touch();
   }
 
   get appliedPromotion(): Promotion | null {
@@ -185,10 +192,12 @@ export class Cart {
 
   public setShippingAddress(address: JsonObject): void {
     this.shippingAddress = address;
+    this.touch();
   }
 
   public setMetadata(key: string, value: JsonValue): void {
     this.metadata = { ...this.metadata, [key]: value };
+    this.touch();
   }
 
   public markFrozen(props: { reason: string; frozenAt?: string }): void {
@@ -200,6 +209,7 @@ export class Cart {
     this.frozen = true;
     this.frozenReason = reason;
     this.frozenAt = props.frozenAt ?? new Date().toISOString();
+    this.touch();
   }
 
   public markConverted(props: { orderId: string; convertedAt?: string }): void {
@@ -210,6 +220,7 @@ export class Cart {
     this.orderId = props.orderId;
     this.convertedAt = props.convertedAt ?? new Date().toISOString();
     this.status = "converted";
+    this.touch();
   }
 
   public isConverted(): boolean {
@@ -225,6 +236,7 @@ export class Cart {
     }
 
     this.taxAmountMinor = taxAmountMinor;
+    this.touch();
   }
 
   public isPaymentInitialized(): boolean {
@@ -258,6 +270,10 @@ export class Cart {
     this.setMetadata("paymentPaidAt", props.paidAt ?? new Date().toISOString());
   }
 
+  private touch(): void {
+    this.updatedAt = new Date().toISOString();
+  }
+
   public toJSON(): JsonObject {
     return {
       id: this.id,
@@ -266,8 +282,8 @@ export class Cart {
       customerId: this.customerId,
       email: this.email,
       createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
       countryCode: this.countryCode,
-      currency: this.currency,
       shippingAddress: this.shippingAddress,
       taxAmountMinor: this.taxAmountMinor,
       metadata: this.metadata,
@@ -295,6 +311,10 @@ export class Cart {
         ? {
             id: this.appliedPromotion.id,
             code: this.appliedPromotion.code,
+            discountType: this.appliedPromotion.discountType,
+            discountValueMinor: this.appliedPromotion.discountValueMinor,
+            minimumSpendMinor: this.appliedPromotion.minimumSpendMinor,
+            isActive: this.appliedPromotion.isActive,
           }
         : null,
     };

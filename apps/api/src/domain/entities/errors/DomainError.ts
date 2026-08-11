@@ -27,6 +27,7 @@ export type ErrorCode =
   | "PAYMENT_REQUIRED"
   | "INVALID_RETURN_ITEM"
   | "INVALID_INPUT"
+  | "REGION_NOT_FOUND"
 
   // Transactional
   | "DUPLICATE_TRANSACTION"

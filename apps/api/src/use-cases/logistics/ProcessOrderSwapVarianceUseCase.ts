@@ -1,6 +1,8 @@
 // apps/api/src/use-cases/logistics/ProcessOrderSwapVarianceUseCase.ts
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
+import { Order } from "@api/domain/entities/Order";
+import { Swap } from "@api/domain/entities/Swap";
 import { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepository";
 import { ISwapRepository } from "@api/domain/interfaces/repositories/ISwapRepository";
 import { IPaymentService } from "@api/domain/interfaces/services/IPaymentService";
@@ -102,7 +104,7 @@ export class ProcessOrderSwapVarianceUseCase {
     });
 
     // --- Load order
-    let order: any;
+    let order: Order | null = null;
     try {
       order = await this.orderRepository.findById(orderId);
     } catch (err: any) {
@@ -137,12 +139,13 @@ export class ProcessOrderSwapVarianceUseCase {
       throw new DomainError("RESOURCE_NOT_FOUND", "Order not found.");
     }
 
+    // Capture the narrowed aggregate for use inside the transaction closure.
+    const loadedOrder = order;
+
     // --- Validate return line item exists and quantity is allowed
-    const originalItem = Array.isArray(order.lineItems)
-      ? order.lineItems.find(
-          (li: any) => String(li.id) === String(returnLineItemId),
-        )
-      : null;
+    const originalItem = loadedOrder.lineItems.find(
+      (li) => String(li.id) === String(returnLineItemId),
+    );
     if (!originalItem) {
       throw new DomainError(
         "INVALID_INPUT",
@@ -161,7 +164,7 @@ export class ProcessOrderSwapVarianceUseCase {
     let originalValueMinor: number;
     try {
       originalValueMinor = Math.floor(
-        Number(order.calculateProratedValue(originalItem.id, returnQuantity)),
+        Number(loadedOrder.calculateProratedValue(originalItem.id, returnQuantity)),
       );
     } catch (err: any) {
       this.logger.error("Failed to compute original prorated value", {
@@ -179,11 +182,11 @@ export class ProcessOrderSwapVarianceUseCase {
     const newValueMinor = Math.floor(newVariantPriceMinor * returnQuantity);
     const differenceMinor = newValueMinor - originalValueMinor;
 
-    // --- Build swap record
+    // --- Build the swap aggregate
     const swapId = this.idGenerator.generate();
-    const swapRecord: any = {
+    const swap = new Swap({
       id: swapId,
-      orderId: order.id,
+      orderId: loadedOrder.id,
       returnLineItemId,
       returnQuantity,
       newVariantId,
@@ -193,19 +196,18 @@ export class ProcessOrderSwapVarianceUseCase {
       status: "pending",
       createdAt: startedAt,
       createdBy: actorId,
-    };
+    });
 
     // --- Persist swap and perform payment/refund side effects transactionally
     try {
       const work = async () => {
-        await this.swapRepository.save(swapRecord);
+        await this.swapRepository.save(swap);
 
         if (differenceMinor > 0) {
           // Customer owes money: create payment intent / transaction
-          // paymentService.initializeTransactionForAmount should return a URL or token
           const paymentResult =
             await this.paymentService.initializeTransactionForAmount(
-              order.customerId,
+              loadedOrder.customerId,
               differenceMinor,
               {
                 metadata: { swapId, orderId },
@@ -214,35 +216,36 @@ export class ProcessOrderSwapVarianceUseCase {
             );
 
           // Persist payment reference on swap if available
-          swapRecord.status = "awaiting_payment";
-          swapRecord.paymentReference = paymentResult?.reference ?? null;
-          swapRecord.paymentUrl = paymentResult?.paymentUrl ?? null;
-          await this.swapRepository.save(swapRecord);
+          swap.markAwaitingPayment({
+            paymentReference: paymentResult?.reference ?? null,
+            paymentUrl: paymentResult?.paymentUrl ?? null,
+          });
+          await this.swapRepository.save(swap);
         } else if (differenceMinor < 0) {
           // Brand owes customer: issue refund
           // Use order.transactionReference to identify original payment
-          if (!order.transactionReference) {
+          if (!loadedOrder.transactionReference) {
             this.logger.warn(
               "Order missing transactionReference; cannot issue refund automatically",
               { orderId, swapId },
             );
-            swapRecord.status = "refund_pending_manual";
-            await this.swapRepository.save(swapRecord);
+            swap.markRefundPendingManual();
+            await this.swapRepository.save(swap);
           } else {
             await this.paymentService.issueRefund(
-              order.transactionReference,
+              loadedOrder.transactionReference,
               Math.abs(differenceMinor),
               {
                 metadata: { swapId, orderId },
               },
             );
-            swapRecord.status = "refund_dispatched";
-            await this.swapRepository.save(swapRecord);
+            swap.markRefundDispatched();
+            await this.swapRepository.save(swap);
           }
         } else {
           // Even exchange
-          swapRecord.status = "even_exchange";
-          await this.swapRepository.save(swapRecord);
+          swap.markEvenExchange();
+          await this.swapRepository.save(swap);
         }
       };
 
@@ -282,7 +285,7 @@ export class ProcessOrderSwapVarianceUseCase {
           typeof this.paymentService.cancelTransaction === "function"
         ) {
           await this.paymentService
-            .cancelTransaction(swapRecord.paymentReference)
+            .cancelTransaction(swap.paymentReference ?? "")
             .catch(() => {});
         }
       } catch {
@@ -305,7 +308,7 @@ export class ProcessOrderSwapVarianceUseCase {
         returnQuantity: String(returnQuantity),
         newVariantId,
         differenceMinor: String(differenceMinor),
-        status: swapRecord.status,
+        status: swap.status,
         processedAt: new Date().toISOString(),
       });
     } catch (auditErr: any) {
@@ -322,26 +325,26 @@ export class ProcessOrderSwapVarianceUseCase {
         swapId,
         orderId,
         differenceMinor,
-        paymentUrl: swapRecord.paymentUrl,
+        paymentUrl: swap.paymentUrl,
       });
       return {
         variance: differenceMinor,
         action: "PAYMENT_REQUIRED",
-        paymentUrl: swapRecord.paymentUrl ?? undefined,
+        paymentUrl: swap.paymentUrl ?? undefined,
         swapId,
       };
     }
 
     if (differenceMinor < 0) {
       const action =
-        swapRecord.status === "refund_dispatched"
+        swap.status === "refund_dispatched"
           ? "REFUND_DISPATCHED"
           : "EVEN_EXCHANGE";
       this.logger.info("Swap resulted in refund or credit", {
         swapId,
         orderId,
         differenceMinor,
-        status: swapRecord.status,
+        status: swap.status,
       });
       return {
         variance: differenceMinor,

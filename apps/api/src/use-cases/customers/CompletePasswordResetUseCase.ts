@@ -223,11 +223,8 @@ export class CompletePasswordResetUseCase {
         // Set new password hash via domain method
         customer.setPasswordHash(newPasswordHash, { updatedAt: nowIso });
 
-        // Clear reset metadata to prevent reuse
-        customer.passwordResetTokenId = null;
-        customer.passwordResetTokenHash = null;
-        customer.passwordResetRequestedAt = null;
-        customer.passwordResetExpiresAt = null;
+        // Clear reset metadata to prevent reuse (incl. request IP)
+        customer.clearPasswordResetMetadata();
 
         // Bump security stamp to invalidate tokens
         customer.bumpSecurityStamp();

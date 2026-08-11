@@ -112,6 +112,20 @@ export class Promotion {
     return this._isActive;
   }
 
+  /**
+   * Computes the discount amount (in minor units) this promotion grants for a
+   * given pre-discount subtotal. Percentage discounts are applied in basis
+   * points; fixed-amount discounts are capped at the subtotal so the result is
+   * never negative.
+   */
+  public computeDiscountAmount(subtotalMinor: number): number {
+    const subtotal = Math.max(0, Math.floor(Number(subtotalMinor) || 0));
+    if (this._discountType === "percentage") {
+      return Math.floor((subtotal * this._discountValueMinor) / 10000);
+    }
+    return Math.min(this._discountValueMinor, subtotal);
+  }
+
   deactivate(): void {
     this._isActive = false;
   }

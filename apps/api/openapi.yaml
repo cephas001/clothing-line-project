@@ -1273,7 +1273,7 @@ paths:
       tags: [Admin]
       summary: Create a product.
       description: |
-        Normalizes and validates the handle (`^[a-z0-9-_]+$`, length 2–100). A handle conflict
+        Normalizes and validates the handle. A handle conflict
         yields `INVALID_OPERATION`.
       requestBody:
         required: true
@@ -1300,7 +1300,7 @@ paths:
       tags: [Admin]
       summary: Create a product variant.
       description: |
-        SKU is normalized to uppercase and must match `^[A-Z0-9-_]+$`. Inventory is bounded
+        SKU is normalized to uppercase and must match. Inventory is bounded
         (0..1,000,000,000). Duplicate SKUs yield `INVALID_OPERATION`.
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -1410,7 +1410,7 @@ paths:
       tags: [Admin]
       summary: Create a promotion rule.
       description: |
-        Code is normalized to uppercase (`^[A-Z0-9-_]+$`). Percentage discounts are bounded to
+        Code is normalized to uppercase. Percentage discounts are bounded to
         10,000 basis points; fixed amounts to 1,000,000,000 minor units. Duplicate codes yield
         `INVALID_OPERATION`.
       requestBody:
@@ -1490,7 +1490,7 @@ paths:
       tags: [Admin]
       summary: Replace the permission set of an admin role.
       description: |
-        Permissions are lowercased, de-duplicated and must match `^[a-z0-9]+:[a-z0-9-]+$`
+        Permissions are lowercased, de-duplicated and must match
         (e.g. `read:products`).
       parameters:
         - $ref: "#/components/parameters/PathId"

@@ -1,3 +1,4 @@
+import { PromotionDiscountType } from "@api/domain/entities/Promotion";
 import { JsonObject, JsonValue } from "@api/domain/shared/json";
 
 export { JsonObject, JsonValue };
@@ -102,43 +103,40 @@ export interface FulfillmentRecord extends JsonObject {
   trackingNumber: string;
 }
 
-export interface ReturnAuthorizationRecord extends JsonObject {
-  id: string;
-  orderId: string;
-  items: Array<{
-    lineItemId: string;
-    quantity: number;
-    reasonCode: string;
-  }>;
-  refundAmountMinor: number;
-  shippingLabelUrl: string | null;
-  status: string;
-  requestedByCustomerId: string | null;
-  createdBy: string;
-  createdAt: string;
-  metadata: JsonObject;
-}
-
-export interface SwapRecord extends JsonObject {
-  id: string;
-  orderId: string;
-  returnLineItemId: string;
-  returnQuantity: number;
-  newVariantId: string;
-  newVariantPriceMinor: number;
-  originalValueMinor: number;
-  differenceMinor: number;
-  status: string;
-  createdAt: string;
-  createdBy: string;
-  paymentReference?: string | null;
-  paymentUrl?: string | null;
-}
-
 export interface ShippingQuote extends JsonObject {
   id?: string;
   serviceLevel?: string;
   amountMinor?: number;
   currency?: string;
   etaDays?: number;
+}
+
+/**
+ * Immutable financial snapshot of the promotion that was applied to an order at
+ * checkout time. Persisted on the order so its financial history does not depend
+ * on the mutable `promotion` table state after the order is created.
+ */
+export interface PromotionSnapshot {
+  promotionId: string;
+  code: string;
+  discountType: PromotionDiscountType;
+  discountValueMinor: number;
+  minimumSpendMinor: number;
+  appliedDiscountMinor: number;
+}
+
+/**
+ * Persistence snapshot of a Promotion applied to a CART. Unlike the order
+ * snapshot, this is intentionally NOT a frozen financial record — the cart must
+ * be able to deliberately re-resolve/revalidate its promotion against the
+ * current `promotion` table, so the full config is stored so a real Promotion
+ * domain entity can be reconstructed on hydration.
+ */
+export interface CartPromotionSnapshot {
+  id: string;
+  code: string;
+  discountType: PromotionDiscountType;
+  discountValueMinor: number;
+  minimumSpendMinor: number;
+  isActive: boolean;
 }

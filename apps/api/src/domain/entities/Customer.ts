@@ -28,6 +28,7 @@ export interface CustomerProps {
   passwordResetTokenHash?: string | null;
   passwordResetRequestedAt?: string | null;
   passwordResetExpiresAt?: string | null;
+  passwordResetRequestIp?: string | null;
   metadata?: JsonObject;
 }
 
@@ -53,6 +54,7 @@ export class Customer {
   public passwordResetTokenHash: string | null;
   public passwordResetRequestedAt: string | null;
   public passwordResetExpiresAt: string | null;
+  public passwordResetRequestIp: string | null;
   public metadata: JsonObject;
 
   constructor(props: CustomerProps) {
@@ -77,6 +79,7 @@ export class Customer {
     this.passwordResetTokenHash = props.passwordResetTokenHash ?? null;
     this.passwordResetRequestedAt = props.passwordResetRequestedAt ?? null;
     this.passwordResetExpiresAt = props.passwordResetExpiresAt ?? null;
+    this.passwordResetRequestIp = props.passwordResetRequestIp ?? null;
     this.metadata = props.metadata ? { ...props.metadata } : {};
   }
 
@@ -115,6 +118,28 @@ export class Customer {
 
   public bumpSecurityStamp(): void {
     this.securityStamp = new Date().getTime().toString();
+  }
+
+  public requestPasswordReset(props: {
+    tokenId: string;
+    tokenHash: string;
+    requestIp?: string | null;
+    requestedAt: string;
+    expiresAt: string;
+  }): void {
+    this.passwordResetTokenId = props.tokenId;
+    this.passwordResetTokenHash = props.tokenHash;
+    this.passwordResetRequestedAt = props.requestedAt;
+    this.passwordResetExpiresAt = props.expiresAt;
+    this.passwordResetRequestIp = props.requestIp ?? null;
+  }
+
+  public clearPasswordResetMetadata(): void {
+    this.passwordResetTokenId = null;
+    this.passwordResetTokenHash = null;
+    this.passwordResetRequestedAt = null;
+    this.passwordResetExpiresAt = null;
+    this.passwordResetRequestIp = null;
   }
 
   public addAddress(address: AddressBookEntry): void {
