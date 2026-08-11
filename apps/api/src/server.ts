@@ -1,3 +1,8 @@
+// Start OpenTelemetry BEFORE any instrumented module (express, pg, Kysely) is
+// imported. ESM evaluates sibling imports in source order, so this must stay
+// the very first import in this file.
+import "./infrastructure/observability/instrumentation";
+
 import express from "express";
 import swaggerUi from "swagger-ui-express";
 import fs from "fs";
