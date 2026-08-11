@@ -20,6 +20,7 @@
     "@stoplight/prism-cli": "^5.16.0",
     "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/pg": "^8.20.4",
     "@types/swagger-ui-express": "^4.1.8",
     "@types/yamljs": "^0.2.34",
@@ -35,9 +36,12 @@
     "@opentelemetry/sdk-node": "^0.221.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "bcrypt": "^6.0.0",
+    "bullmq": "^6.0.10",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "import-in-the-middle": "^3.3.3",
+    "ioredis": "^6.0.0",
+    "jsonwebtoken": "^9.0.3",
     "kysely": "^0.29.4",
     "pg": "^8.22.0",
     "pino": "^10.3.1",
@@ -46,9 +50,9 @@
     "yamljs": "^0.3.0"
   },
   "imports": {
-    "#domain/*": "./dist/domain/*.js",
-    "#use-cases/*": "./dist/use-cases/*.js",
-    "#infrastructure/*": "./dist/infrastructure/*.js",
-    "#adapters/*": "./dist/adapters/*.js"
+    "#domain/*": "./src/domain/*.ts",
+    "#use-cases/*": "./src/use-cases/*.ts",
+    "#infrastructure/*": "./src/infrastructure/*.ts",
+    "#adapters/*": "./src/adapters/*.ts"
   }
 }
