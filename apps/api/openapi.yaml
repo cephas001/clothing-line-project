@@ -62,8 +62,7 @@ paths:
       summary: Browse the catalogue with filtering and pagination.
       description: |
         Returns a paginated, region- and channel-aware product list. Supports an optional
-        category filter and free-text search. `expand`/`fields` projections are honoured by
-        the read adapter when present.
+        category filter and free-text search.
       security: []
       parameters:
         - $ref: "#/components/parameters/SalesChannelHeader"
@@ -95,8 +94,6 @@ paths:
             minimum: 0
             maximum: 10000000
             default: 0
-        - $ref: "#/components/parameters/ExpandQuery"
-        - $ref: "#/components/parameters/FieldsQuery"
       responses:
         "200":
           description: Paginated product list with a total count.
@@ -604,29 +601,6 @@ paths:
         "500":
           $ref: "#/components/responses/StandardErrorResponse"
 
-  /store/carts/{id}/complete:
-    post:
-      tags: [Checkout]
-      summary: Complete checkout and convert the cart into an immutable order.
-      security: []
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: Finalized order.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Order"
-        "400":
-          $ref: "#/components/responses/StandardErrorResponse"
-        "404":
-          $ref: "#/components/responses/StandardErrorResponse"
-        "409":
-          $ref: "#/components/responses/StandardErrorResponse"
-        "500":
-          $ref: "#/components/responses/StandardErrorResponse"
-
   /store/payments/webhook:
     post:
       tags: [Checkout]
@@ -1094,7 +1068,21 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReturnAuthorization"
+                type: object
+                required: [rmaId, refundAmountMinor]
+                properties:
+                  rmaId:
+                    type: string
+                    format: uuid
+                  refundAmountMinor:
+                    type: integer
+                    minimum: 0
+                    description: Prorated refund in minor units.
+                  returnLabelUrl:
+                    type: string
+                    format: uri
+                    nullable: true
+                    description: Return label URL when requireReturnLabel was true.
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "404":
@@ -1127,7 +1115,22 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Swap"
+                type: object
+                required: [swapId, variance, action]
+                properties:
+                  swapId:
+                    type: string
+                    format: uuid
+                  variance:
+                    type: integer
+                    description: Signed variance in minor units (positive = customer owes).
+                  action:
+                    type: string
+                    enum: [EVEN_EXCHANGE, PAYMENT_REQUIRED, REFUND_DISPATCHED]
+                  paymentUrl:
+                    type: string
+                    format: uri
+                    nullable: true
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "404":
@@ -1159,7 +1162,18 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrderEdit"
+                type: object
+                required: [orderEditId, differenceDueMinor, status]
+                properties:
+                  orderEditId:
+                    type: string
+                    format: uuid
+                  differenceDueMinor:
+                    type: integer
+                    description: Signed monetary difference in minor units (positive = customer owes).
+                  status:
+                    type: string
+                    enum: [proposed]
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "404":
@@ -1646,17 +1660,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SourcingRequest"
       responses:
-        "200":
-          description: Optimal sourcing location.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [locationId]
-                properties:
-                  locationId:
-                    type: string
-                    format: uuid
+        "204":
+          description: Stale transactions terminated.
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "500":
@@ -1864,6 +1869,7 @@ components:
                 - BUSINESS_UNIT_ALREADY_EXISTS
                 - PAYMENT_DECLINED
                 - INVALID_SIGNATURE
+                - REGION_NOT_FOUND
                 - RESOURCE_NOT_FOUND
                 - CART_NOT_FOUND
                 - PRODUCT_NOT_FOUND
@@ -2541,168 +2547,6 @@ components:
     # ------------------------------------------------------------------
     # Logistics DTOs
     # ------------------------------------------------------------------
-    ReturnAuthorization:
-      type: object
-      description: Return authorization (RMA) with prorated refund.
-      required: [id, orderId, refundAmountMinor, status]
-      properties:
-        id:
-          type: string
-          format: uuid
-        orderId:
-          type: string
-          format: uuid
-        items:
-          type: array
-          items:
-            type: object
-            required: [lineItemId, quantity, reasonCode]
-            properties:
-              lineItemId:
-                type: string
-                format: uuid
-              quantity:
-                type: integer
-                minimum: 1
-              reasonCode:
-                type: string
-        refundAmountMinor:
-          type: integer
-          minimum: 0
-          description: Prorated refund in minor units.
-        shippingLabelUrl:
-          type: string
-          nullable: true
-        status:
-          type: string
-          enum: [pending_receipt]
-        requestedByCustomerId:
-          type: string
-          format: uuid
-          nullable: true
-        createdBy:
-          type: string
-          nullable: true
-        createdAt:
-          type: string
-          format: date-time
-        metadata:
-          type: object
-          additionalProperties: true
-
-    Swap:
-      type: object
-      description: Swap processing result including the signed price variance.
-      required: [swapId, variance, action]
-      properties:
-        swapId:
-          type: string
-          format: uuid
-        orderId:
-          type: string
-          format: uuid
-        returnLineItemId:
-          type: string
-          format: uuid
-        returnQuantity:
-          type: integer
-          minimum: 1
-        newVariantId:
-          type: string
-          format: uuid
-        newVariantPriceMinor:
-          type: integer
-          minimum: 0
-        originalValueMinor:
-          type: integer
-          minimum: 0
-        variance:
-          type: integer
-          description: Signed variance in minor units (positive = customer owes).
-        action:
-          type: string
-          enum: [EVEN_EXCHANGE, PAYMENT_REQUIRED, REFUND_DISPATCHED]
-        paymentUrl:
-          type: string
-          format: uri
-          nullable: true
-        status:
-          type: string
-          enum:
-            [
-              even_exchange,
-              awaiting_payment,
-              refund_dispatched,
-              refund_pending_manual,
-            ]
-        createdAt:
-          type: string
-          format: date-time
-        paymentReference:
-          type: string
-          nullable: true
-
-    OrderEdit:
-      type: object
-      description: Proposed or confirmed edit to an unfulfilled order.
-      required: [id, orderId, actionType, status]
-      properties:
-        id:
-          type: string
-          format: uuid
-        orderId:
-          type: string
-          format: uuid
-        actionType:
-          type: string
-          example: proposed_edit
-        reason:
-          type: string
-          nullable: true
-        status:
-          type: string
-          enum: [draft, proposed, confirmed, applied]
-        differenceDueMinor:
-          type: integer
-          description: Signed monetary difference in minor units (positive = customer owes).
-        proposedChanges:
-          type: array
-          items:
-            type: object
-            required: [type, quantity]
-            properties:
-              type:
-                type: string
-                enum: [add, remove, update]
-              lineItemId:
-                type: string
-                format: uuid
-                nullable: true
-              newVariantId:
-                type: string
-                format: uuid
-                nullable: true
-              quantity:
-                type: integer
-                minimum: 1
-              unitPriceMinor:
-                type: integer
-                minimum: 0
-        confirmedAt:
-          type: string
-          format: date-time
-          nullable: true
-        confirmedBy:
-          type: string
-          format: uuid
-          nullable: true
-        paymentReference:
-          type: string
-          nullable: true
-        createdAt:
-          type: string
-          format: date-time
-
     DeadLetterJob:
       type: object
       description: Failed background job surfaced for inspection and retry.
@@ -3019,10 +2863,6 @@ components:
           type: string
           format: password
           minLength: 8
-        businessUnitId:
-          type: string
-          format: uuid
-          description: Optional B2B business unit to associate on registration.
 
     InitiatePasswordResetRequest:
       type: object

@@ -14,8 +14,7 @@ export interface paths {
         /**
          * Browse the catalogue with filtering and pagination.
          * @description Returns a paginated, region- and channel-aware product list. Supports an optional
-         *     category filter and free-text search. `expand`/`fields` projections are honoured by
-         *     the read adapter when present.
+         *     category filter and free-text search.
          */
         get: {
             parameters: {
@@ -24,10 +23,6 @@ export interface paths {
                     categoryId?: string;
                     limit?: number;
                     offset?: number;
-                    /** @description Comma-separated nested relations to expand (e.g. `variants,options`). */
-                    expand?: components["parameters"]["ExpandQuery"];
-                    /** @description Comma-separated subset of fields to project (e.g. `id,title,thumbnail`). */
-                    fields?: components["parameters"]["FieldsQuery"];
                 };
                 header?: {
                     /** @description Scopes catalogue reads to a specific sales channel. */
@@ -877,48 +872,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/store/carts/{id}/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Complete checkout and convert the cart into an immutable order. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: components["parameters"]["PathId"];
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Finalized order. */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Order"];
-                    };
-                };
-                400: components["responses"]["StandardErrorResponse"];
-                404: components["responses"]["StandardErrorResponse"];
-                409: components["responses"]["StandardErrorResponse"];
-                500: components["responses"]["StandardErrorResponse"];
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/store/payments/webhook": {
         parameters: {
             query?: never;
@@ -1688,7 +1641,17 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["ReturnAuthorization"];
+                        "application/json": {
+                            /** Format: uuid */
+                            rmaId: string;
+                            /** @description Prorated refund in minor units. */
+                            refundAmountMinor: number;
+                            /**
+                             * Format: uri
+                             * @description Return label URL when requireReturnLabel was true.
+                             */
+                            returnLabelUrl?: string | null;
+                        };
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
@@ -1739,7 +1702,16 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Swap"];
+                        "application/json": {
+                            /** Format: uuid */
+                            swapId: string;
+                            /** @description Signed variance in minor units (positive = customer owes). */
+                            variance: number;
+                            /** @enum {string} */
+                            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
+                            /** Format: uri */
+                            paymentUrl?: string | null;
+                        };
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
@@ -1789,7 +1761,14 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["OrderEdit"];
+                        "application/json": {
+                            /** Format: uuid */
+                            orderEditId: string;
+                            /** @description Signed monetary difference in minor units (positive = customer owes). */
+                            differenceDueMinor: number;
+                            /** @enum {string} */
+                            status: "proposed";
+                        };
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
@@ -1967,7 +1946,7 @@ export interface paths {
         put?: never;
         /**
          * Create a product.
-         * @description Normalizes and validates the handle (`^[a-z0-9-_]+$`, length 2–100). A handle conflict
+         * @description Normalizes and validates the handle. A handle conflict
          *     yields `INVALID_OPERATION`.
          */
         post: {
@@ -2014,7 +1993,7 @@ export interface paths {
         put?: never;
         /**
          * Create a product variant.
-         * @description SKU is normalized to uppercase and must match `^[A-Z0-9-_]+$`. Inventory is bounded
+         * @description SKU is normalized to uppercase and must match. Inventory is bounded
          *     (0..1,000,000,000). Duplicate SKUs yield `INVALID_OPERATION`.
          */
         post: {
@@ -2206,7 +2185,7 @@ export interface paths {
         put?: never;
         /**
          * Create a promotion rule.
-         * @description Code is normalized to uppercase (`^[A-Z0-9-_]+$`). Percentage discounts are bounded to
+         * @description Code is normalized to uppercase. Percentage discounts are bounded to
          *     10,000 basis points; fixed amounts to 1,000,000,000 minor units. Duplicate codes yield
          *     `INVALID_OPERATION`.
          */
@@ -2346,7 +2325,7 @@ export interface paths {
         get?: never;
         /**
          * Replace the permission set of an admin role.
-         * @description Permissions are lowercased, de-duplicated and must match `^[a-z0-9]+:[a-z0-9-]+$`
+         * @description Permissions are lowercased, de-duplicated and must match
          *     (e.g. `read:products`).
          */
         put: {
@@ -2594,17 +2573,12 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Optimal sourcing location. */
-                200: {
+                /** @description Stale transactions terminated. */
+                204: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content: {
-                        "application/json": {
-                            /** Format: uuid */
-                            locationId: string;
-                        };
-                    };
+                    content?: never;
                 };
                 400: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -2733,7 +2707,7 @@ export interface components {
                  * @example OUT_OF_STOCK
                  * @enum {string}
                  */
-                code: "VALIDATION_ERROR" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
+                code: "VALIDATION_ERROR" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "REGION_NOT_FOUND" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
                 /** @example Requested quantity exceeds available inventory. */
                 message: string;
                 details?: {
@@ -3075,88 +3049,6 @@ export interface components {
             approvedAt?: string | null;
             approvalNote?: string | null;
         };
-        /** @description Return authorization (RMA) with prorated refund. */
-        ReturnAuthorization: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            orderId: string;
-            items?: {
-                /** Format: uuid */
-                lineItemId: string;
-                quantity: number;
-                reasonCode: string;
-            }[];
-            /** @description Prorated refund in minor units. */
-            refundAmountMinor: number;
-            shippingLabelUrl?: string | null;
-            /** @enum {string} */
-            status: "pending_receipt";
-            /** Format: uuid */
-            requestedByCustomerId?: string | null;
-            createdBy?: string | null;
-            /** Format: date-time */
-            createdAt?: string;
-            metadata?: {
-                [key: string]: unknown;
-            };
-        };
-        /** @description Swap processing result including the signed price variance. */
-        Swap: {
-            /** Format: uuid */
-            swapId: string;
-            /** Format: uuid */
-            orderId?: string;
-            /** Format: uuid */
-            returnLineItemId?: string;
-            returnQuantity?: number;
-            /** Format: uuid */
-            newVariantId?: string;
-            newVariantPriceMinor?: number;
-            originalValueMinor?: number;
-            /** @description Signed variance in minor units (positive = customer owes). */
-            variance: number;
-            /** @enum {string} */
-            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
-            /** Format: uri */
-            paymentUrl?: string | null;
-            /** @enum {string} */
-            status?: "even_exchange" | "awaiting_payment" | "refund_dispatched" | "refund_pending_manual";
-            /** Format: date-time */
-            createdAt?: string;
-            paymentReference?: string | null;
-        };
-        /** @description Proposed or confirmed edit to an unfulfilled order. */
-        OrderEdit: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            orderId: string;
-            /** @example proposed_edit */
-            actionType: string;
-            reason?: string | null;
-            /** @enum {string} */
-            status: "draft" | "proposed" | "confirmed" | "applied";
-            /** @description Signed monetary difference in minor units (positive = customer owes). */
-            differenceDueMinor?: number;
-            proposedChanges?: {
-                /** @enum {string} */
-                type: "add" | "remove" | "update";
-                /** Format: uuid */
-                lineItemId?: string | null;
-                /** Format: uuid */
-                newVariantId?: string | null;
-                quantity: number;
-                unitPriceMinor?: number;
-            }[];
-            /** Format: date-time */
-            confirmedAt?: string | null;
-            /** Format: uuid */
-            confirmedBy?: string | null;
-            paymentReference?: string | null;
-            /** Format: date-time */
-            createdAt?: string;
-        };
         /** @description Failed background job surfaced for inspection and retry. */
         DeadLetterJob: {
             id: string;
@@ -3308,11 +3200,6 @@ export interface components {
             email: string;
             /** Format: password */
             password: string;
-            /**
-             * Format: uuid
-             * @description Optional B2B business unit to associate on registration.
-             */
-            businessUnitId?: string;
         };
         InitiatePasswordResetRequest: {
             /** Format: email */

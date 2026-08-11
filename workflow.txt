@@ -1,0 +1,381 @@
+================================================================================
+WORKFLOWS — @clothing-line-project / apps/api (use-case layer)
+================================================================================
+This document summarizes every workflow defined in the project. The authoritative
+source is the use-case layer under `apps/api/src/use-cases/`. Each workflow is a
+Clean-Architecture use case that follows a common pattern:
+
+  1. Normalize + validate inputs (throws DomainError with stable codes).
+  2. Load aggregates via repository interfaces.
+  3. Enforce business rules / apply domain-entity methods (invariants live in entities).
+  4. Persist atomically via an injected ITransactionManager (repositories never own transactions).
+  5. Map repository/DB errors (RepositoryError) to DomainError codes.
+  6. Emit a NON-BLOCKING audit log entry and structured logs.
+
+NOTATION USED BELOW
+- "authorize:" means the use case invokes IAuthorizationService.authorizeAdmin; otherwise flows
+  rely on supplied admin/customer IDs purely for audit attribution.
+- "audit(ACTION)" = non-blocking audit log emission (failures only warn).
+- Error names are DomainError codes; repository-level failures (CONNECTION/TIMEOUT/DUPLICATE/...)
+  are mapped consistently to INTERNAL_ERROR / INVALID_OPERATION / LOCK_ACQUISITION_FAILED etc.
+
+--------------------------------------------------------------------------------
+1. CART WORKFLOWS                       (apps/api/src/use-cases/cart/)
+--------------------------------------------------------------------------------
+
+InitializeCartSession
+  Create a new (empty) cart session bound to a region + sales channel.
+  - Validate regionId, salesChannelId (required), email (format/254 max), countryCode (ISO A2).
+  - Verify region + sales channel exist (parallel).
+  - Instantiate Cart entity with a generated id.
+  - transactionManager.execute -> cartRepository.save(cart).
+  - non-blocking( CART_SESSION_INITIALIZED ).
+
+AddCartLineItem
+  Add/update a variant-backed line item to a cart.
+  - Validate cartId + variantId; load cart (CART_NOT_FOUND) and variant (RESOURCE_NOT_FOUND).
+  - Rule: if variant.allowBackorder false and inventoryQuantity < quantity -> OUT_OF_STOCK.
+  - Rule: fetch regional price for cart.regionId; missing -> REGIONAL_PRICE_MISSING.
+  - Build CartLineItem with unitPrice = regional price.
+  - transaction -> cart.addOrUpdateItem(lineItem); save cart.
+  - non-blocking audit(CART_LINEITEM_ADD).
+
+UpdateLineItemQuantity
+  Change a line item's quantity.
+  - Validate cartId + lineItemId; load cart (CART_NOT_FOUND); getItem -> RESOURCE_NOT_FOUND.
+  - If variant-backed, re-check inventory (OUT_OF_STOCK unless allowBackorder).
+  - transaction -> lineItem.updateQuantity(quantity); save cart.
+  - non-blocking audit(CART_LINEITEM_QUANTITY_UPDATED); duplicate+NOT_FOUND handled.
+
+RemoveCartLineItem
+  Remove a line item.
+  - Validate; load cart (CART_NOT_FOUND); getItem -> RESOURCE_NOT_FOUND.
+  - transaction -> cart.removeItem(lineItemId); save cart.
+  - non-blocking audit(CART_LINEITEM_REMOVED).
+
+AddCustomLineItem
+  Add a NON-variant (manual/custom) item.
+  - Validate cartId + title (<=1000); load cart (CART_NOT_FOUND).
+  - Build custom item payload (id,title,quantity,unitPriceMinor); 
+  - transaction -> cart.addCustomItem(item); save cart.
+  - non-blocking audit(CART_CUSTOM_ITEM_ADD).
+
+ApplyDiscountCode
+  Apply a promotion code to a cart.
+  - Validate cartId + code (uppercase, /^[A-Z0-9-_]+$/), load cart (CART_NOT_FOUND).
+  - Load promotion findByCode; missing/inactive -> VALIDATION_ERROR.
+  - Rule: cartTotalMinor >= minimumSpendMinor else VALIDATION_ERROR.
+  - Rule: already applied -> INVALID_OPERATION (also on DUPLICATE race).
+  - transaction -> cart.applyDiscount(promotion); save cart.
+  - non-blocking audit(CART_DISCOUNT_APPLIED).
+
+MergeGuestCartToCustomer
+  Bind a guest cart to an authenticated customer (e.g., at login).
+  - Validate guestCartId + customerId; load both; guard cart.customerId already assigned to another -> INVALID_OPERATION.
+  - If customer has an active cart, merge items best-effort into active cart and delete guest.
+  - Else assign guest cart to customer + set activeCart.
+  - transaction covers save/delete both sides.
+  - non-blocking audit(CART_MERGED_TO_CUSTOMER).
+
+--------------------------------------------------------------------------------
+================================================================================
+CHECKOUT — PAYMENT + ORDER FINALIZATION
+(apps/api/src/use-cases/checkout/)
+--------------------------------------------------------------------------------
+
+InitializePaymentSession
+  Initialize a gateway transaction for a cart and get an authorization URL.
+  - Load cart (CART_NOT_FOUND); validate cartTotal>0 (INVALID_OPERATION), not already payment-initialized (INVALID_OPERATION), not paid (INVALID_OPERATION).
+  - Build payload (NGN default); paymentService.initializeTransaction -> authorizationUrl (EXTERNAL_SERVICE_ERROR if invalid).
+  - transaction -> cart.markPaymentInitialized({authorizationUrl}); save cart.
+  - On persist failure: best-effort paymentService.cancelInitialization.
+  - non-blocking audit(PAYMENT_SESSION_INITIALIZED);
+  Returns authorizationUrl.
+
+QueuePaymentEvent
+  Enqueue an incoming payment event for async processing.
+  - jobId = transactionReference (idempotency), 5 attempts, exponential backoff, high priority.
+  - queueService.enqueueJob(-> ) - DUPLICATE treated as idempotent success (audit PAYMENT_EVENT_ALREADY_QUEUED).
+  - non-blocking audit(PAYMENT_EVENT_QUEUED).
+
+VerifyPaymentEventSignature
+  Authenticate a payment webhook via HMAC-SHA512.
+  - Requires rawBody Buffer + signatureHeader + secretKey.
+  - cryptoService.generateHmacSha512 then constant-time compare (constantTimeCompare).
+  - mismatch -> PAYMENT_VERIFICATION_FAILED; crypto infra errors -> INTERNAL_ERROR.
+  - non-blocking audit(PAYMENT_SIGNATURE_VERIFICATION).
+
+ProcessFraudAlertEvent
+  Handle an incoming fraud alert: hold payment + halt fulfillment.
+  - transaction -> order.setPaymentStatus("requires_action", FRAUD_ALERT) + order.haltFulfillment(); save order (OUT/HOLD idempotent guard).
+  - Best-effort logisticsService.cancelFulfillment (external failure does NOT revert order state).
+  - non-blocking audit(FRAUD_ALERT_PROCESSED).
+
+ProcessDeadLetterQueue
+  Move a failed job to durable DLQ storage.
+  - queueService.moveToDeadLetterQueue; payloadPreview capped at 512 chars.
+  - non-blocking audit(DLQ_ENTRY_CREATED).
+
+ReserveInventoryPessimistic
+  Reserve inventory using row-level pessimistic lock (SELECT FOR UPDATE NOWAIT).
+  - Validate quantity (integer, >=1, <=10000).
+  - Inside transactionManager: variantRepository.lockVariantForUpdateNoWait -> LOCKED/NOWAIT mapped to LOCK_ACQUISITION_FAILED.
+  - Rule: if !allowBackorder and available < qty -> OUT_OF_STOCK.
+  - variant.deductInventory(qty); save.
+  - non-blocking audit(INVENTORY_RESERVED).
+
+ReconcileOrphanedLocks
+  Terminate stale/long-running transactions to free locks.
+  - clamp staleThresholdMs (default 30s, max 1h); dbManagementService.terminateStaleTransactions.
+  - non-blocking audit(ORPHANED_LOCKS_RECONCILED).
+
+CreateOrderRiskAssessment
+  Evaluate fraud/risk on an order and predict caution review.
+  - load order (idempotent skip if missing); riskService.evaluateRisk; score>=highRiskThreshold (default 80) -> order.flagForReview + direct save.
+  - non-blocking audit(ORDER_RISK_ASSESSED).
+
+SetCheckoutShippingAddress
+  Set shipping address and recompute tax.
+  - transaction: cart.setShippingAddress; taxService.calculateTaxForAddress; cart.applyTax; save cart.
+  - non-blocking audit(CHECKOUT_SHIPPING_ADDRESS_SET).
+
+RetrieveDynamicShippingQuotes
+  Load dynamic shipping quotes for a cart from an external provider.
+  - Requires a valid shipping address (else INVALID_STATE); logisticsService.fetchDynamicRates; capped 50 quoteRecords.
+  - non-blocking audit(DYNAMIC_SHIPPING_QUOTES_RETRIEVED).
+
+FetchEmbeddedInsuranceQuote
+  Get an embedded insurance premium for the cart total.
+  - require integer cartTotal>=0 (INVALID_STATE); insuranceService.getQuote; persist lastInsuranceQuote metadata best-effort (non-blocking).
+  - non-blocking audit(INSURANCE_QUOTE_FETCHED).
+
+FinalizeOrderTransaction
+  Create the final Order + Transaction after a successful payment and mark the cart converted.
+  - Idempotency: findByReference; if exists and order found -> reuse order (audit ORDER_FINALIZATION_IDEMPOTENT), else DUPLICATE_TRANSACTION.
+  - Load cart; require customerId (INVALID_OPERATION); not already converted (INVALID_OPERATION);
+  - Rule: amountPaidMinor must equal cartTotalMinor (INVALID_PAYMENT_AMOUNT).
+  - transaction: create Order (fulfillment unfulfilled, payment captured) + save; save Transaction; cart.markConverted({orderId}); save cart.
+  - non-blocking audit(ORDER_FINALIZED). Returns Order.
+
+--------------------------------------------------------------------------------
+================================================================
+CUSTOMERS (apps/api/src/use-cases/customers/)
+--------------------------------------------------------------------------------
+
+RegisterCustomerAccount
+  - Validate email format, password >=8, names <=256; unique email (CUSTOMER_ALREADY_EXISTS).
+  - hashingService.hash; save Customer (DUPLICATE->CUSTOMER_ALREADY_EXISTS).
+  - non-blocking audit(CUSTOMER_REGISTERED).
+
+AuthenticateCustomer
+  - Load by email; unknown email raising INVALID_CREDENTIALS (no existence leak).
+  - Disabled -> ACCOUNT_DISABLED; lockUntil in future -> ACCOUNT_LOCKED.
+  - Verify password; on failure increment failedAttempts and apply lockout (5 attempts / 15-min window, cap 10) then INVALID_CREDENTIALS.
+  - On success reset counters, set lastLoginAt.
+  - tokenService.generateAuthToken; non-blocking audit(AUTHENTICATION_SUCCEEDED). Returns accessToken.
+
+RevokeCustomerSession
+  - Revoke a single token OR all sessions for a user (exactly one target required).
+  - token revoke via sessionRevocationService; bulk via list+revoke-each (fallback chain, else UNSUPPORTED_OPERATION).
+  - non-blocking audit(SESSION_TOKEN_REVOKED / ALL_SESSIONS_REVOKED_FOR_USER).
+
+InitiatePasswordReset
+  - Load by email; unknown email -> silent success (no enumeration leak, audit PASSWORD_RESET_INITIATED_UNKNOWN_EMAIL).
+  - tokenService.generatePasswordResetToken (TTL default 1h); persist metadata (best-effort); send email best-effort.
+  - non-blocking audit(PASSWORD_RESET_INITIATED).
+
+CompletePasswordReset
+  - Verify token (invalid/expired -> UNAUTHORIZED_ACCESS); cross-check stored token id/hash.
+  - hashPassword; transaction: setPasswordHash + clear reset metadata + bumpSecurityStamp (invalidates JWTs); save.
+  - Revoke sessions + single-use token best-effort.
+  - non-blocking audit(PASSWORD_RESET_COMPLETED).
+
+ManageAddressBook
+  - Load customer; dispatch add / update / delete via domain methods (addAddress/updateAddress/removeAddress).
+  - JSONB size guarded (10,000 bytes); save between action.
+  - non-blocking audit(ADDRESS_ADDED / ADDRESS_UPDATED / ADDRESS_DELETED).
+
+ProcessCustomerDataErasure (GDPR/CCPA)
+  - Load customer; anonymizePII(reason, erasedBy, erasedAt); save (anonymize not hard-delete).
+  - Best-effort revoke sessions/tokens.
+  - non-blocking audit(DATA_ERASURE_COMPLETED).
+
+ManageB2BBusinessUnit
+  - Validate + ensure admin customer exists; uniqueness by registration number / name (BUSINESS_UNIT_ALREADY_EXISTS).
+  - Create BusinessUnit seeded with admin as COMPANY_ADMIN.
+  - non-blocking audit(BUSINESS_UNIT_CREATED).
+
+RequestQuote
+  - Load cart; verify ownership (cart.customerId === customerId); cart must have items (INVALID_OPERATION).
+  - Snapshot cart JSON (truncated 200k); create Quote entity.
+  - transaction: save quote; optionally freeze cart.
+  - non-blocking audit(QUOTE_REQUESTED); DUPLICATE->DUPLICATE_QUOTE.
+
+ApproveB2BQuote
+  - Load quote (RESOURCE_NOT_FOUND); must be PENDING_APPROVAL (INVALID_STATE).
+  - quote.approve({adminId, approvedTotal, note}); save; notify business unit best-effort (minimal payload).
+  - non-blocking audit(QUOTE_APPROVED).
+
+RetrieveOrderHistory (CQRS read)
+  - findByHistoryByCustomerId paginated; readModel only, no writes; limit 1..100 default 10.
+  - non-blocking audit(ORDER_HISTORY_RETRIEVED). Returns {items,total}.
+
+--------------------------------------------------------------------------------
+================================================================
+LOGISTICS / FULFILLMENT (apps/api/src/use-cases/logistics/)
+--------------------------------------------------------------------------------
+
+GenerateDraftOrder
+  Invoice-backed draft order creation (admin-initiated / cooperative).
+  - Validate email, items (<=200 each >0), shippingAddress serializable; compute total.
+  - create DraftOrder status "awaiting_payment"; transaction save.
+  - Send invoice best-effort (on failure audit DRAFT_ORDER_INVOICE_SEND_FAILED).
+  - non-blocking audit(DRAFT_ORDER_CREATED). Returns draftOrderId.
+
+DispatchOrderFulfillment
+  - Load order; rule: fulfillmentStatus must be unfulfilled or ready (INVALID_STATE).
+  - logisticsService.createShippingLabel -> tracking number (EXTERNAL_SERVICE_ERROR if missing).
+  - transaction: save FulfillmentRecord (pending_dispatch); order.addFulfillment + setFulfillmentStatus("fulfilled"); save order.
+  - On failure best-effort cancelFulfillment.
+  - non-blocking audit(ORDER_DISPATCHED).
+
+ProcessCourierTrackingEvent
+  - Look up fulfillment by trackingNumber; unknown -> silent ignore (audit TRACKING_EVENT_IGNORED_UNKNOWN).
+  - Out-of-order guard: event time <= stored updatedAt -> ignore (TRACKING_EVENT_IGNORED_OLD).
+  - Normalize raw courier status to lineage statuses; fulfillment.updateStatus; save.
+  - Notify customer best-effort; non-blocking audit(TRACKING_EVENT_PROCESSED).
+
+DetermineSourcingLocation
+  - find optimal fulfillment node for a variant quantity (returns locationId).
+  - Rule: if none and allowSplit -> findSplitFulfillmentPlan; else OUT_OF_STOCK.
+  - non-blocking audit(SOURCING_LOCATION_DETERMINED / _SPLIT / NOT_FOUND).
+
+InitiateReturnAuthorization (RMA)
+  - For order items: verify existence + qty<=fulfilled; prorated value via order.calculateProratedValue; compute refund.
+  - Create reverse shipping label when requireReturnLabel (EXTERNAL_SERVICE_ERROR if invalid URL).
+  - transaction: save RMA (pending_receipt) + order.markReturnPending per line; on failure cancelReturnLabel best-effort.
+  - non-blocking audit(RETURN_AUTHORIZATION_CREATED). Returns rmaId/refund/labelUrl.
+
+ProposeOrderEdit
+  - Rule: order.fulfillmentStatus must be "unfulfilled" (else ORDER_ALREADY_FULFILLED).
+  - Compute monetary variance via order.calculateEditsVariance.
+  - Create OrderEdit status "proposed" (shadow copy, does NOT mutate live order); transaction save.
+  - non-blocking audit(ORDER_EDIT_PROPOSED). Returns orderEditId + differenceDueMinor.
+
+ConfirmOrderEdit
+  - Idempotent: already confirmed/applied -> skip (ORDER_EDIT_CONFIRM_SKIPPED_ALREADY_APPLIED).
+  - Rule: if differenceDueMinor > 0 and !paymentConfirmed -> PAYMENT_REQUIRED.
+  - Apply edits to live order.
+  - transaction: orderEdit.confirm (->confirmed->applied) + save order + save orderEdit.
+  - non-blocking audit(ORDER_EDIT_CONFIRMED).
+
+ProcessOrderSwapVariance
+  - compute difference = newVariantPrice*qty - proratedValue of returned line; bounded by fulfilledQty.
+  - Branch: positive -> paymentService.initiate, set awaiting_payment; negative -> issueRefund / refund_dispatched; zero -> even_exchange.
+  - All within transaction; best-effort cancel payment on failure.
+  - non-blocking audit(SWAP_VARIANCE_PROCESSED). Returns action + paymentUrl.
+
+--------------------------------------------------------------------------------
+================================================================
+CATALOG (apps/catalog/)
+--------------------------------------------------------------------------------
+
+GetProductDetails
+  - Product by id + channel/region context; visibility enforced by read repo (PRODUCT_NOT_FOUND if not visible).
+  - expand cap (<=20), fields cap (<=100). non-atomic audit(PRODUCT_VIEWED).
+
+BrowseCatalog
+  - Paginated/filterable listing in a channel/region; limit<=200, offset<=10,000,000 region, optional areaCost filters.
+  - non-atomic audit(CATALOG_BROWSE). Returns {items,total}.
+
+SearchProducts
+  - Non-empty query; scoped to channel + region; limit default 12 max 200; array normalized.
+  - non-atomic audit(PRODUCT_SEARCH).
+
+RetrieveCategory
+  - Build category tree (includeDescendants default true); array normalization.
+  - non-atomic audit(CATEGORY_TREE_RETRIEVED).
+
+GetVariantAvailability
+  - Variant + regional price from read repo; visibility enforced by repo; nullable price valid.
+  - non-atomic audit(VARIANT_AVAILABILITY_CHECK).
+
+ResolveCrossSellingProducts
+  - recommendationEngine.getRelatedProducts; limit default 4 max 50.
+  - non-atomic audit(CROSS_SELL_RESOLVED).
+
+SubmitProductReview
+  - VERIFIED BUYER rule: orderRepository.hasCustomerPurchasedProduct else UNAUTHORIZED_REVIEW.
+  - rating integer 1-5; comment <=5000; DUPLICATE -> INVALID_OPERATION (one review per customer+product).
+  - non-atomic audit(PRODUCT_REVIEW_SUBMITTED).
+
+--------------------------------------------------------------------------------
+================================================================
+ADMIN / OPERATIONS (apps/admin/)
+--------------------------------------------------------------------------------
+NOTE: Across admin use cases, explicit IAuthorizationService authorization is only performed in
+AdjustInventoryLevelUseCase (see below). The other admin flows take an admin id purely for audit attribution.
+
+CreateProduct
+  - title required; handle normalized (normalizeHandle) + validated (validateHandle) letters/digits/hyphens/underscores.
+  - Uniqueness fast-fail findByHandle (INVALID_OPERATION); transaction save.
+  - non-atomic audit(PRODUCT_CREATE).
+
+CreateProductVariant
+  - SKU required, uppercase normalized, /^[A-Z0-9-_]+$/; parent must exit (RESOURCE_NOT_FOUND).
+  - Uniqueness fast-fail findBySku; allowBackorder explicit; transaction save.
+  - non-atomic audit(PRODUCT_VARIANT_CREATE).
+
+AdjustInventoryLevel
+  - authorize + authorizesAdmin("inventory.adjust") else UNAUTHORIZED.
+  - Load variant; variant.setAbsoluteInventory(newQuantity) (absolute override); reason mandatory.
+  - transaction save. non-atomic audit(INVENTORY_ADJUSTMENT).
+
+ConfigureRegionalPricing
+  - create/update price for variant+region; both must exist (RESOURCE_NOT_FOUND).
+  - amountMinor in smallest currency; idempotent no-op if same amount.
+  - transaction save; non-atomic audit(REGIONAL_PRICE_SET).
+
+ConfigureTaxCategory
+  - rate in basis points; region must exist; unique name+region (INVALID_OPERATION).
+  - transaction save; non-atomic audit(TAX_CATEGORY_CREATE).
+
+CreateSalesChannel
+  - name/description length caps; isDisabled default false; transaction save.
+  - non-atomic audit(SALES_CHANNEL_CREATE).
+
+ManageCategories (executeCreate)
+  - name <=200; parent must exist (RESOURCE_NOT_FOUND); simple cycle guard parent != self.
+  - transaction save; non-atomic audit(CATEGORY_CREATE).
+
+CreatePromotionRule
+  - code uppercased + unique fast-fail; discountValueMinor + type (percentage/fixed); minimumSpend default 0; isActive true.
+  - transaction save; non-atomic audit(PROMOTION_CREATE).
+
+ManageAdminRolePermissions
+  - Replace permission set; normalized (lowercase, dedup, format resource:action); role.loaded (RESOURCE_NOT_FOUND); snapshot for audit diff.
+  - transaction save; non-atomic audit(ROLE_PERMISSIONS_UPDATED).
+
+ImportBulkCatalogData
+  - Validate CSV/JSON hint; enqueue async bulk-import to "bulk-import-queue" (no inline import). URL must be HTTP(S).
+  - non-atomic audit(BULK_CATALOG_IMPORT_ENQUEUED). Returns jobId.
+
+ListDeadLetterJobs
+  - Read failed jobs from a named queue; limit<=200 offset<=10,000,000; optional audit when adminId.
+  - Returns {items,total}.
+
+RetryDeadLetterJob
+  - Push a DLQ job back to the active queue; NOT_FOUND -> RESOURCE_NOT_FOUND, false return -> JOB_PROCESSING_ERROR.
+  - optional audit(DLQ_JOB_RETRIED).
+
+--------------------------------------------------------------------------------
+================================================================
+X-CUTTING ARCHITECTURAL NOTES / INVARIANTS
+================================================================
+- Idempotency is pervasive: transactionReference dedups (QueuePaymentEvent, FinalizeOrder); token verification is state-guarded (ConfirmOrderEdit, Paying leading idempotent replays).
+- Atomicity: ALL writes go through ITransactionManager.execute; repositories never own transactions. The only repo-level lock primitive is IVariantRepository.lockVariantForUpdateNoWait inside the transaction.
+- Error mapping: RepositoryError (CONNECTION/TIMEOUT -> INTERNAL_ERROR; DUPLICATE -> INVALID_OPERATION; NOT_FOUND -> RESOURCE_NOT_FOUND; LOCKED/NOWAIT -> LOCK_ACQUISITION_FAILED). New codes go in domain/errors/DomainError.ts.
+- Audit logs are always non-blocking (failures logged as warnings).
+- Authorizations: Only AdjustInventoryLevelUseCase calls IAuthorizationService.
+- Verified-purchaser gate exists for reviews only.
+- Payments denominated in minor units; taxes/discounts in basis points.

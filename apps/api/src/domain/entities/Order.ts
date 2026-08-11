@@ -1,8 +1,12 @@
 // apps/api/src/domain/entities/Order.ts
+
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { PromotionSnapshot } from "@api/domain/shared/contracts";
 import { JsonObject } from "@api/domain/shared/json";
 
+/**
+ * Domain types used by Order
+ */
 export type FulfillmentStatus =
   | "unfulfilled"
   | "ready_for_dispatch"
@@ -18,6 +22,10 @@ export type PaymentStatus =
   | "requires_action"
   | "on_hold";
 
+/**
+ * OrderLineItem
+ * - Minimal snapshot of a purchased line on an order.
+ */
 export interface OrderLineItem {
   id: string;
   variantId?: string | null;
@@ -26,6 +34,10 @@ export interface OrderLineItem {
   fulfilledQuantity?: number | null;
 }
 
+/**
+ * ProposedChangeType
+ * - Used when proposing or applying edits to an order.
+ */
 export interface ProposedChangeType {
   type: "add" | "remove" | "update";
   lineItemId?: string | null;
@@ -34,6 +46,10 @@ export interface ProposedChangeType {
   unitPriceMinor?: number;
 }
 
+/**
+ * OrderProps
+ * - Plain data shape used to construct an Order entity.
+ */
 export interface OrderProps {
   id: string;
   cartId: string;
@@ -57,13 +73,33 @@ export interface OrderProps {
   promotionSnapshot?: PromotionSnapshot | null;
 }
 
+/**
+ * Order
+ *
+ * Domain entity representing a finalized order snapshot.
+ * - Keeps an immutable financial baseline (_totalAmountMinor) and exposes
+ *   methods to mutate fulfillment/payment state and apply edits.
+ * - All monetary values are integers in minor units (Kobo).
+ */
 export class Order {
+  // -------------------------
+  // Identity and baseline
+  // -------------------------
   readonly id: string;
   readonly cartId: string;
   readonly customerId: string;
   private _totalAmountMinor: number; // Immutable financial baseline
+  public readonly createdAt: string;
+
+  // -------------------------
+  // State machines
+  // -------------------------
   private _fulfillmentStatus: FulfillmentStatus;
   private _paymentStatus: PaymentStatus;
+
+  // -------------------------
+  // Payment / risk / flags
+  // -------------------------
   public transactionReference: string | null;
   public paymentStatusReason: string | null;
   public paymentStatusUpdatedAt: string | null;
@@ -72,14 +108,21 @@ export class Order {
   public riskScore: number | null;
   public flaggedAt: string | null;
   public fulfillmentHaltedAt: string | null;
-  public readonly createdAt: string;
+
+  // -------------------------
+  // Collections and snapshots
+  // -------------------------
   private _lineItems: OrderLineItem[];
   private _availableVariants: Array<{ id: string; unitPriceMinor: number }>;
   private _fulfillments: JsonObject[];
   private _pendingReturns: JsonObject[];
   public promotionSnapshot: PromotionSnapshot | null;
 
+  // -------------------------
+  // Constructor and validation
+  // -------------------------
   constructor(props: OrderProps) {
+    // Domain invariants
     if (!props.cartId || !props.customerId) {
       throw new DomainError(
         "VALIDATION_ERROR",
@@ -96,12 +139,18 @@ export class Order {
       );
     }
 
+    // Identity / baseline
     this.id = props.id;
     this.cartId = props.cartId;
     this.customerId = props.customerId;
     this._totalAmountMinor = props.totalAmountMinor;
+    this.createdAt = props.createdAt || new Date().toISOString();
+
+    // Initial states
     this._fulfillmentStatus = props.fulfillmentStatus || "unfulfilled";
     this._paymentStatus = props.paymentStatus || "pending";
+
+    // Payment / risk / flags
     this.transactionReference = props.transactionReference ?? null;
     this.paymentStatusReason = props.paymentStatusReason ?? null;
     this.paymentStatusUpdatedAt = props.paymentStatusUpdatedAt ?? null;
@@ -110,7 +159,8 @@ export class Order {
     this.riskScore = props.riskScore ?? null;
     this.flaggedAt = props.flaggedAt ?? null;
     this.fulfillmentHaltedAt = props.fulfillmentHaltedAt ?? null;
-    this.createdAt = props.createdAt || new Date().toISOString();
+
+    // Collections (defensive copies)
     this._lineItems = props.lineItems ? [...props.lineItems] : [];
     this._availableVariants = props.availableVariants
       ? [...props.availableVariants]
@@ -122,7 +172,15 @@ export class Order {
     this.promotionSnapshot = props.promotionSnapshot ?? null;
   }
 
-  // --- Fulfillment state machine
+  // -------------------------
+  // Fulfillment state machine
+  // -------------------------
+
+  /**
+   * markAsFulfilled
+   * - Transition the order to fulfilled.
+   * - Guard: cannot fulfill an order that has been marked returned.
+   */
   public markAsFulfilled(): void {
     if (this._fulfillmentStatus === "returned") {
       throw new DomainError(
@@ -133,10 +191,18 @@ export class Order {
     this._fulfillmentStatus = "fulfilled";
   }
 
+  /**
+   * processReturn
+   * - Mark the order as returned (used when returns complete).
+   */
   public processReturn(): void {
     this._fulfillmentStatus = "returned";
   }
 
+  /**
+   * setFulfillmentStatus
+   * - Generic setter for fulfillment status with domain guard for returned -> fulfilled.
+   */
   public setFulfillmentStatus(
     status: FulfillmentStatus,
     props?: { updatedAt?: string },
@@ -150,7 +216,75 @@ export class Order {
     this._fulfillmentStatus = status;
   }
 
-  // --- Payment state machine
+  /**
+   * haltFulfillment
+   * - Place the order on hold and record when it was halted.
+   */
+  public haltFulfillment(props?: { reason?: string; haltedAt?: string }): void {
+    this._fulfillmentStatus = "on_hold";
+    this.fulfillmentHaltedAt = props?.haltedAt ?? new Date().toISOString();
+  }
+
+  /**
+   * addFulfillment
+   * - Append a fulfillment record and mark order as fulfilled.
+   * - Validates the fulfillment payload shape minimally.
+   */
+  public addFulfillment(fulfillment: JsonObject): void {
+    if (!fulfillment || typeof fulfillment !== "object") {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Fulfillment must be a valid object.",
+      );
+    }
+    this._fulfillments.push(fulfillment);
+    this._fulfillmentStatus = "fulfilled";
+  }
+
+  // -------------------------
+  // Returns handling
+  // -------------------------
+
+  /**
+   * markReturnPending
+   * - Mark a line item as having a pending return.
+   * - Validates line existence and that requested quantity does not exceed fulfilled quantity.
+   */
+  public markReturnPending(lineItemId: string, quantity: number): void {
+    const line = this._lineItems.find((li) => li.id === lineItemId);
+    if (!line) {
+      throw new DomainError(
+        "INVALID_RETURN_ITEM",
+        "Line item not found on order.",
+      );
+    }
+    const fulfilledQty = line.fulfilledQuantity ?? line.quantity;
+    if (
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > fulfilledQty
+    ) {
+      throw new DomainError(
+        "INVALID_RETURN_QUANTITY",
+        "Cannot return more items than were fulfilled.",
+      );
+    }
+    this._pendingReturns.push({
+      lineItemId,
+      quantity,
+      returnedAt: new Date().toISOString(),
+    });
+  }
+
+  // -------------------------
+  // Payment state machine & risk
+  // -------------------------
+
+  /**
+   * setPaymentStatus
+   * - Update payment status and optional reason/timestamp.
+   * - No-op if status is unchanged.
+   */
   public setPaymentStatus(
     status: PaymentStatus,
     props?: { reason?: string; updatedAt?: string },
@@ -163,6 +297,10 @@ export class Order {
     this.paymentStatusUpdatedAt = props?.updatedAt ?? new Date().toISOString();
   }
 
+  /**
+   * flagForReview
+   * - Mark the order for manual review with a reason and optional score.
+   */
   public flagForReview(props: {
     reason: string;
     score?: number;
@@ -177,45 +315,15 @@ export class Order {
     this.flaggedAt = props.flaggedAt ?? new Date().toISOString();
   }
 
-  public haltFulfillment(props?: { reason?: string; haltedAt?: string }): void {
-    this._fulfillmentStatus = "on_hold";
-    this.fulfillmentHaltedAt = props?.haltedAt ?? new Date().toISOString();
-  }
+  // -------------------------
+  // Promotion snapshot
+  // -------------------------
 
-  public addFulfillment(fulfillment: JsonObject): void {
-    if (!fulfillment || typeof fulfillment !== "object") {
-      throw new DomainError(
-        "VALIDATION_ERROR",
-        "Fulfillment must be a valid object.",
-      );
-    }
-    this._fulfillments.push(fulfillment);
-    this._fulfillmentStatus = "fulfilled";
-  }
-
-  public markReturnPending(lineItemId: string, quantity: number): void {
-    const line = this._lineItems.find((li) => li.id === lineItemId);
-    if (!line) {
-      throw new DomainError(
-        "INVALID_RETURN_ITEM",
-        "Line item not found on order.",
-      );
-    }
-    const fulfilledQty = line.fulfilledQuantity ?? line.quantity;
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > fulfilledQty) {
-      throw new DomainError(
-        "INVALID_RETURN_QUANTITY",
-        "Cannot return more items than were fulfilled.",
-      );
-    }
-    this._pendingReturns.push({
-      lineItemId,
-      quantity,
-      returnedAt: new Date().toISOString(),
-    });
-  }
-
-  // --- Promotion snapshot (historically immutable)
+  /**
+   * recordPromotionSnapshot
+   * - Persist an immutable snapshot of the promotion applied at order time.
+   * - Validates minimal required fields on the snapshot.
+   */
   public recordPromotionSnapshot(snapshot: PromotionSnapshot): void {
     if (!snapshot || !snapshot.promotionId || !snapshot.code) {
       throw new DomainError(
@@ -226,7 +334,15 @@ export class Order {
     this.promotionSnapshot = snapshot;
   }
 
-  // --- Financial helpers
+  // -------------------------
+  // Financial helpers
+  // -------------------------
+
+  /**
+   * calculateProratedValue
+   * - Compute the prorated monetary value for a returned quantity of a line item.
+   * - Uses unitPriceMinor * quantity as the fallback/prorated calculation.
+   */
   public calculateProratedValue(lineItemId: string, quantity: number): number {
     const line = this._lineItems.find((li) => li.id === lineItemId);
     if (!line) {
@@ -244,6 +360,11 @@ export class Order {
     return Math.floor(line.unitPriceMinor * quantity);
   }
 
+  /**
+   * calculateEditVariance
+   * - Compute the integer minor-currency variance for a set of proposed changes.
+   * - Uses availableVariants to resolve prices for added/updated variants.
+   */
   public calculateEditVariance(changes: ProposedChangeType[]): number {
     let variance = 0;
     for (const ch of changes) {
@@ -251,9 +372,7 @@ export class Order {
         const variant = this._availableVariants.find(
           (v) => String(v.id) === String(ch.newVariantId),
         );
-        const price = variant
-          ? Math.floor(Number(variant.unitPriceMinor))
-          : 0;
+        const price = variant ? Math.floor(Number(variant.unitPriceMinor)) : 0;
         variance += price * Math.floor(Number(ch.quantity));
       } else if (ch.type === "remove") {
         const line = this._lineItems.find(
@@ -278,6 +397,11 @@ export class Order {
     return variance;
   }
 
+  /**
+   * applyConfirmedEdits
+   * - Apply a set of confirmed changes to the order's line items and recalculate totals.
+   * - Validates appliedBy and delegates to recalculateTotals after mutation.
+   */
   public applyConfirmedEdits(
     changes: ProposedChangeType[],
     props: { appliedBy: string; appliedAt: string },
@@ -313,12 +437,21 @@ export class Order {
     this.recalculateTotals();
   }
 
+  /**
+   * recalculateTotals
+   * - Recompute the order's total amount from current line items.
+   * - Ensures the internal baseline remains an integer in minor units.
+   */
   public recalculateTotals(): void {
     this._totalAmountMinor = this._lineItems.reduce(
       (sum, li) => sum + li.unitPriceMinor * li.quantity,
       0,
     );
   }
+
+  // -------------------------
+  // Read-only accessors
+  // -------------------------
 
   get fulfillmentStatus(): FulfillmentStatus {
     return this._fulfillmentStatus;

@@ -1,8 +1,13 @@
 // apps/api/src/domain/entities/Promotion.ts
+
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 
 export type PromotionDiscountType = "percentage" | "fixed_amount";
 
+/**
+ * PromotionProps
+ * - Plain data shape used to construct a Promotion entity.
+ */
 export interface PromotionProps {
   id: string;
   code: string;
@@ -12,19 +17,40 @@ export interface PromotionProps {
   isActive?: boolean;
 }
 
+/**
+ * Promotion
+ *
+ * Domain entity representing a discount/promotion.
+ * - All monetary values are integers in minor units.
+ * - Percentage discounts are expressed in basis points (10000 = 100%).
+ * - Validation is strict and throws DomainError on invalid input.
+ */
 export class Promotion {
+  // -------------------------
+  // Limits and constants
+  // -------------------------
   private static readonly MAX_DISCOUNT_VALUE = 1_000_000_000;
   private static readonly MAX_MINIMUM_SPEND = 1_000_000_000_00;
 
+  // -------------------------
+  // Readonly identity
+  // -------------------------
   readonly id: string;
   readonly code: string;
 
+  // -------------------------
+  // Internal state
+  // -------------------------
   private _discountType: PromotionDiscountType;
   private _discountValueMinor: number;
   private _minimumSpendMinor: number;
   private _isActive: boolean;
 
+  // -------------------------
+  // Constructor and validation
+  // -------------------------
   constructor(props: PromotionProps) {
+    // Normalize and validate code
     const code = props.code.trim().toUpperCase();
 
     if (!code) {
@@ -38,6 +64,7 @@ export class Promotion {
       );
     }
 
+    // Validate discount type
     if (
       props.discountType !== "percentage" &&
       props.discountType !== "fixed_amount"
@@ -45,6 +72,7 @@ export class Promotion {
       throw new DomainError("VALIDATION_ERROR", "Invalid discount type.");
     }
 
+    // Validate discount value
     if (
       !Number.isInteger(props.discountValueMinor) ||
       props.discountValueMinor < 0
@@ -55,6 +83,7 @@ export class Promotion {
       );
     }
 
+    // Percentage-specific cap (basis points)
     if (
       props.discountType === "percentage" &&
       props.discountValueMinor > 10000
@@ -72,6 +101,7 @@ export class Promotion {
       );
     }
 
+    // Validate minimum spend
     const minimumSpend = props.minimumSpendMinor ?? 0;
 
     if (!Number.isInteger(minimumSpend) || minimumSpend < 0) {
@@ -88,6 +118,7 @@ export class Promotion {
       );
     }
 
+    // Assign fields (preserve original semantics)
     this.id = props.id;
     this.code = code;
     this._discountType = props.discountType;
@@ -96,6 +127,9 @@ export class Promotion {
     this._isActive = props.isActive ?? true;
   }
 
+  // -------------------------
+  // Accessors
+  // -------------------------
   get discountType(): PromotionDiscountType {
     return this._discountType;
   }
@@ -112,11 +146,14 @@ export class Promotion {
     return this._isActive;
   }
 
+  // -------------------------
+  // Business logic
+  // -------------------------
+
   /**
-   * Computes the discount amount (in minor units) this promotion grants for a
-   * given pre-discount subtotal. Percentage discounts are applied in basis
-   * points; fixed-amount discounts are capped at the subtotal so the result is
-   * never negative.
+   * computeDiscountAmount
+   * - Computes the discount amount (in minor units) for a given subtotal.
+   * - Percentage discounts use basis points; fixed discounts are capped at subtotal.
    */
   public computeDiscountAmount(subtotalMinor: number): number {
     const subtotal = Math.max(0, Math.floor(Number(subtotalMinor) || 0));
@@ -126,6 +163,9 @@ export class Promotion {
     return Math.min(this._discountValueMinor, subtotal);
   }
 
+  // -------------------------
+  // State mutation helpers
+  // -------------------------
   deactivate(): void {
     this._isActive = false;
   }
@@ -134,6 +174,10 @@ export class Promotion {
     this._isActive = true;
   }
 
+  /**
+   * updateDiscount
+   * - Update discount type and value with the same validation rules as construction.
+   */
   updateDiscount(type: PromotionDiscountType, value: number): void {
     if (!Number.isInteger(value) || value < 0) {
       throw new DomainError(
@@ -160,6 +204,10 @@ export class Promotion {
     this._discountValueMinor = value;
   }
 
+  /**
+   * updateMinimumSpend
+   * - Update the minimum spend threshold with the same validation rules as construction.
+   */
   updateMinimumSpend(amountMinor: number): void {
     if (!Number.isInteger(amountMinor) || amountMinor < 0) {
       throw new DomainError(
