@@ -20,6 +20,7 @@ import { ReserveInventoryPessimisticUseCase } from "@api/use-cases/checkout/Rese
 import { RetrieveDynamicShippingQuotesUseCase } from "@api/use-cases/checkout/RetrieveDynamicShippingQuotesUseCase";
 import { SetCheckoutShippingAddressUseCase } from "@api/use-cases/checkout/SetCheckoutShippingAddressUseCase";
 import { VerifyPaymentEventSignatureUseCase } from "@api/use-cases/checkout/VerifyPaymentEventSignatureUseCase";
+import { VerifyPaymentEventUseCase } from "@api/use-cases/checkout/VerifyPaymentEventUseCase";
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface CheckoutUseCases {
@@ -34,6 +35,7 @@ export interface CheckoutUseCases {
   reserveInventoryPessimistic: ReserveInventoryPessimisticUseCase;
   retrieveDynamicShippingQuotes?: RetrieveDynamicShippingQuotesUseCase;
   setCheckoutShippingAddress?: SetCheckoutShippingAddressUseCase;
+  verifyPaymentEvent: VerifyPaymentEventUseCase;
   verifyPaymentEventSignature: VerifyPaymentEventSignatureUseCase;
 }
 
@@ -46,6 +48,7 @@ export function buildCheckoutUseCases(
   const finalizeOrderTransaction = new FinalizeOrderTransactionUseCase(
     deps.orderRepository,
     deps.transactionRepository,
+    deps.paymentRepository,
     deps.cartRepository,
     auditLogService,
     idGenerator,
@@ -73,6 +76,12 @@ export function buildCheckoutUseCases(
   );
   const verifyPaymentEventSignature = new VerifyPaymentEventSignatureUseCase(
     deps.cryptographyService,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const verifyPaymentEvent = new VerifyPaymentEventUseCase(
+    deps.paymentRepository,
     auditLogService,
     idGenerator,
     logger,
@@ -118,6 +127,7 @@ export function buildCheckoutUseCases(
   if (paymentService) {
     initializePaymentSession = new InitializePaymentSessionUseCase(
       deps.cartRepository,
+      deps.paymentRepository,
       paymentService,
       auditLogService,
       idGenerator,
@@ -209,6 +219,7 @@ export function buildCheckoutUseCases(
     "QueuePaymentEventUseCase",
     "ReserveInventoryPessimisticUseCase",
     "VerifyPaymentEventSignatureUseCase",
+    "VerifyPaymentEventUseCase",
   );
 
   return {
@@ -223,6 +234,7 @@ export function buildCheckoutUseCases(
     reserveInventoryPessimistic,
     retrieveDynamicShippingQuotes,
     setCheckoutShippingAddress,
+    verifyPaymentEvent,
     verifyPaymentEventSignature,
   };
 }

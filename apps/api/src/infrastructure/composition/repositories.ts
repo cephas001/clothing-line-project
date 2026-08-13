@@ -24,7 +24,9 @@ import { PostgresOrderRepository } from "../database/repositories/PostgresOrderR
 import { PostgresProductReadRepository } from "../database/repositories/PostgresProductReadRepository";
 import { PostgresProductRepository } from "../database/repositories/PostgresProductRepository";
 import { PostgresPromotionRepository } from "../database/repositories/PostgresPromotionRepository";
+import { PostgresPaymentRepository } from "../database/repositories/PostgresPaymentRepository";
 import { PostgresQuoteRepository } from "../database/repositories/PostgresQuoteRepository";
+import { PostgresRefundRepository } from "../database/repositories/PostgresRefundRepository";
 import { PostgresRegionRepository } from "../database/repositories/PostgresRegionRepository";
 import { PostgresReturnRepository } from "../database/repositories/PostgresReturnRepository";
 import { PostgresReviewRepository } from "../database/repositories/PostgresReviewRepository";
@@ -49,7 +51,9 @@ import type { IOrderRepository } from "@api/domain/interfaces/repositories/IOrde
 import type { IProductReadRepository } from "@api/domain/interfaces/repositories/IProductReadRepository";
 import type { IProductRepository } from "@api/domain/interfaces/repositories/IProductRepository";
 import type { IPromotionRepository } from "@api/domain/interfaces/repositories/IPromotionRepository";
+import type { IPaymentRepository } from "@api/domain/interfaces/repositories/IPaymentRepository";
 import type { IQuoteRepository } from "@api/domain/interfaces/repositories/IQuoteRepository";
+import type { IRefundRepository } from "@api/domain/interfaces/repositories/IRefundRepository";
 import type { IRegionRepository } from "@api/domain/interfaces/repositories/IRegionRepository";
 import type { IReturnRepository } from "@api/domain/interfaces/repositories/IReturnRepository";
 import type { IReviewRepository } from "@api/domain/interfaces/repositories/IReviewRepository";
@@ -76,7 +80,9 @@ export interface Repositories {
   productReadRepository: IProductReadRepository;
   productRepository: IProductRepository;
   promotionRepository: IPromotionRepository;
+  paymentRepository: IPaymentRepository;
   quoteRepository: IQuoteRepository;
+  refundRepository: IRefundRepository;
   regionRepository: IRegionRepository;
   returnRepository: IReturnRepository;
   reviewRepository: IReviewRepository;
@@ -105,7 +111,9 @@ export function buildRepositories(context: TransactionContext): Repositories {
     productReadRepository: new PostgresProductReadRepository(context),
     productRepository: new PostgresProductRepository(context),
     promotionRepository: new PostgresPromotionRepository(context),
+    paymentRepository: new PostgresPaymentRepository(context),
     quoteRepository: new PostgresQuoteRepository(context),
+    refundRepository: new PostgresRefundRepository(context),
     regionRepository: new PostgresRegionRepository(context),
     returnRepository: new PostgresReturnRepository(context),
     reviewRepository: new PostgresReviewRepository(context),

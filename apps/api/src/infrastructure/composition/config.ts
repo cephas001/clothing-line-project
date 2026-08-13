@@ -18,6 +18,13 @@
 // the token service refuses to operate without it. Development-friendly
 // defaults exist only for values that are safe to run without (PORT, REDIS_URL,
 // JWT_EXPIRES_IN, BCRYPT_SALT_ROUNDS, LOG_LEVEL) and are documented as such.
+//
+// Paystack: PAYSTACK_SECRET_KEY is OPTIONAL at the config boundary because the
+// Paystack adapter itself fails at construction without it, and the composition
+// root only constructs the adapter when a secret is present. When absent, the
+// payment use cases are reported as unwired (never faked), matching the
+// external-service composition policy. The API runtime is the only consumer of
+// these values; the worker runtime never reads them.
 
 import type { Level } from "pino";
 
@@ -37,6 +44,26 @@ export interface AppConfig {
   bcryptSaltRounds: number;
   /** Minimum Pino level to emit. Default: "info". */
   logLevel: Level;
+  /**
+   * Paystack secret key. OPTIONAL here — the Paystack adapter requires it and
+   * fails at construction without it; the composition root only builds the
+   * adapter when it is present. Absent => payment use cases reported unwired.
+   */
+  paystackSecretKey?: string;
+  /**
+   * Paystack webhook signature secret. OPTIONAL here, like PAYSTACK_SECRET_KEY —
+   * the webhook router is only mounted when it is present. This is a DISTINCT
+   * secret from PAYSTACK_SECRET_KEY: it is the dedicated `webhook_secret`
+   * Paystack uses to sign webhook bodies (HMAC-SHA512 over the raw request
+   * bytes, delivered in the `x-paystack-signature` header). It MUST never be
+   * derived from or shared with the API secret key. Absent => the webhook
+   * endpoint is not mounted (requests receive a 404), never a fallback.
+   */
+  paystackWebhookSecret?: string;
+  /** Paystack API base URL. Default: https://api.paystack.co (HTTPS enforced). */
+  paystackBaseUrl: string;
+  /** Per-request Paystack timeout in milliseconds. Default: 10000. */
+  paystackTimeoutMs: number;
 }
 
 const DEFAULT_PORT = 5000;
@@ -44,6 +71,8 @@ const DEFAULT_REDIS_URL = "redis://localhost:6379"; // development-only default
 const DEFAULT_JWT_EXPIRES_IN = "1h";
 const DEFAULT_BCRYPT_SALT_ROUNDS = 12;
 const DEFAULT_LOG_LEVEL: Level = "info";
+const DEFAULT_PAYSTACK_BASE_URL = "https://api.paystack.co";
+const DEFAULT_PAYSTACK_TIMEOUT_MS = 10_000;
 
 const PINO_LEVELS: readonly Level[] = [
   "trace",
@@ -71,7 +100,27 @@ export function loadAppConfig(
     jwtExpiresIn: env.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
     bcryptSaltRounds: parseSaltRounds(env.BCRYPT_SALT_ROUNDS),
     logLevel: parseLogLevel(env.LOG_LEVEL),
+    paystackSecretKey: (env.PAYSTACK_SECRET_KEY ?? "").trim() || undefined,
+    paystackWebhookSecret:
+      (env.PAYSTACK_WEBHOOK_SECRET ?? "").trim() || undefined,
+    paystackBaseUrl:
+      (env.PAYSTACK_BASE_URL ?? "").trim() || DEFAULT_PAYSTACK_BASE_URL,
+    paystackTimeoutMs: parsePaystackTimeout(env.PAYSTACK_TIMEOUT_MS),
   };
+}
+
+/** Absent PAYSTACK_TIMEOUT_MS uses the default; an explicit invalid value fails fast. */
+function parsePaystackTimeout(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_PAYSTACK_TIMEOUT_MS;
+  }
+  const timeout = Number(raw);
+  if (!Number.isInteger(timeout) || timeout <= 0) {
+    throw new Error(
+      `PAYSTACK_TIMEOUT_MS must be a positive integer of milliseconds; received "${raw}".`,
+    );
+  }
+  return timeout;
 }
 
 /** Absent PORT uses the development default; an explicit invalid value fails fast. */

@@ -43,7 +43,44 @@ async function main(): Promise<void> {
     });
   });
 
-  // 5. Start the HTTP server
+  // 5. Mount the payment webhook (raw-body capture happens inside the router).
+  //    Mounted only when PAYSTACK_WEBHOOK_SECRET is configured; the handler
+  //    verifies the signature, maps the provider event, and enqueues it — it
+  //    never finalizes an order synchronously.
+  if (runtime.paymentWebhookRouter) {
+    app.use("/store/payments/webhook", runtime.paymentWebhookRouter);
+    logger.info("Payment webhook mounted", {
+      path: "/store/payments/webhook",
+    });
+  }
+
+  // 5b. Mount the payment-initialization endpoint (transport boundary only).
+  //     Mounted only when the payment service is configured; the handler maps
+  //     the request into InitializePaymentSessionUseCase and returns the
+  //     application-level result. It never finalizes an order or accepts
+  //     client-supplied financial values or payment status.
+  if (runtime.paymentInitializationRouter) {
+    app.use("/store/carts", runtime.paymentInitializationRouter);
+    logger.info("Payment initialization mounted", {
+      path: "/store/carts/:id/payment-sessions",
+    });
+  }
+
+  // 5c. Mount the swap-payment endpoint (transport boundary only). Mounted only
+  //     when the payment service is configured; the handler maps the request
+  //     into ProcessOrderSwapVarianceUseCase and returns the application-level
+  //     result. The client never supplies a financial value — the use case
+  //     resolves the authoritative replacement price and creates the durable
+  //     obligation before the gateway is contacted. It never finalizes a swap
+  //     or accepts client-supplied payment status.
+  if (runtime.swapRouter) {
+    app.use("/store/orders", runtime.swapRouter);
+    logger.info("Swap payment mounted", {
+      path: "/store/orders/:orderId/swaps",
+    });
+  }
+
+  // 6. Start the HTTP server
   const server = app.listen(port, () => {
     logger.info("API server listening", {
       port,

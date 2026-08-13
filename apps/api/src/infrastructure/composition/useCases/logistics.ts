@@ -12,20 +12,24 @@
 import { ConfirmOrderEditUseCase } from "@api/use-cases/logistics/ConfirmOrderEditUseCase";
 import { DetermineSourcingLocationUseCase } from "@api/use-cases/logistics/DetermineSourcingLocationUseCase";
 import { DispatchOrderFulfillmentUseCase } from "@api/use-cases/logistics/DispatchOrderFulfillmentUseCase";
+import { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
 import { GenerateDraftOrderUseCase } from "@api/use-cases/logistics/GenerateDraftOrderUseCase";
 import { InitiateReturnAuthorizationUseCase } from "@api/use-cases/logistics/InitiateReturnAuthorizationUseCase";
 import { ProcessOrderSwapVarianceUseCase } from "@api/use-cases/logistics/ProcessOrderSwapVarianceUseCase";
 import { ProposeOrderEditUseCase } from "@api/use-cases/logistics/ProposeOrderEditUseCase";
+import { VerifySwapPaymentEventUseCase } from "@api/use-cases/logistics/VerifySwapPaymentEventUseCase";
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface LogisticsUseCases {
   confirmOrderEdit: ConfirmOrderEditUseCase;
   determineSourcingLocation?: DetermineSourcingLocationUseCase;
   dispatchOrderFulfillment?: DispatchOrderFulfillmentUseCase;
+  finalizeSwapTransaction: FinalizeSwapTransactionUseCase;
   generateDraftOrder?: GenerateDraftOrderUseCase;
   initiateReturnAuthorization?: InitiateReturnAuthorizationUseCase;
   processOrderSwapVariance?: ProcessOrderSwapVarianceUseCase;
   proposeOrderEdit: ProposeOrderEditUseCase;
+  verifySwapPaymentEvent: VerifySwapPaymentEventUseCase;
 }
 
 export function buildLogisticsUseCases(
@@ -127,12 +131,17 @@ export function buildLogisticsUseCases(
   if (paymentService) {
     processOrderSwapVariance = new ProcessOrderSwapVarianceUseCase(
       deps.orderRepository,
+      deps.cartRepository,
       deps.swapRepository,
+      deps.paymentRepository,
+      deps.refundRepository,
       paymentService,
       auditLogService,
       idGenerator,
       logger,
       transactionManager,
+      deps.customerRepository,
+      deps.moneyAmountRepository,
     );
   } else {
     report.unwiredUseCase(
@@ -140,6 +149,28 @@ export function buildLogisticsUseCases(
       "IPaymentService",
     );
   }
+
+  // --- Swap payment verification + atomic finalization (worker-side) ---------
+  // These only depend on repositories + IAuditLogService, so they are always
+  // wired. The PaymentEventWorker consumes them for swap obligations.
+  const verifySwapPaymentEvent = new VerifySwapPaymentEventUseCase(
+    deps.paymentRepository,
+    deps.swapRepository,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const finalizeSwapTransaction = new FinalizeSwapTransactionUseCase(
+    deps.swapRepository,
+    deps.orderRepository,
+    deps.paymentRepository,
+    deps.transactionRepository,
+    deps.variantRepository,
+    auditLogService,
+    idGenerator,
+    logger,
+    transactionManager,
+  );
 
   report.unwiredUseCase(
     "ProcessCourierTrackingEventUseCase",
@@ -149,15 +180,19 @@ export function buildLogisticsUseCases(
   report.wiredUseCases(
     "ConfirmOrderEditUseCase",
     "ProposeOrderEditUseCase",
+    "VerifySwapPaymentEventUseCase",
+    "FinalizeSwapTransactionUseCase",
   );
 
   return {
     confirmOrderEdit,
     determineSourcingLocation,
     dispatchOrderFulfillment,
+    finalizeSwapTransaction,
     generateDraftOrder,
     initiateReturnAuthorization,
     processOrderSwapVariance,
     proposeOrderEdit,
+    verifySwapPaymentEvent,
   };
 }
