@@ -574,8 +574,25 @@ paths:
       summary: Initialize a payment intent for the cart.
       description: |
         Initialises a cryptographic payment intent with the payment gateway and returns the
-        hosted authorization URL. Rejects empty carts, carts already initialized, or carts
-        already paid.
+        hosted authorization URL. The charge amount and currency are computed AUTHORITATIVELY
+        server-side (subtotal − discount + tax + shipping + insurance, all from durable server
+        state) and durably persisted as the payment obligation BEFORE the gateway is contacted;
+        no client-supplied total, discount, tax, shipping amount, or currency is trusted.
+
+        IDENTITY: the request body NEVER carries a customer identity. When the caller presents
+        a valid bearer JWT (issued by POST /store/auth), its `customerId` claim is the
+        authoritative actor for ownership checks. Guest checkout is supported (like every
+        /store/carts endpoint): without a token the cart is resolved purely by path id and the
+        cart's own server-stored customer/email. A customerId supplied in the body is never
+        accepted.
+
+        REQUEST: only client-selectable checkout information is accepted (see
+        PaymentSessionRequest). FINANCIAL VALUES are never accepted from the client.
+
+        RESPONSE: only the application-level result (authorizationUrl, reference) is returned.
+        No raw provider response, database row, secret, or gateway key is exposed.
+
+        Rejects empty carts, carts already initialized, or carts already paid.
       security: []
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -594,6 +611,10 @@ paths:
                 $ref: "#/components/schemas/PaymentSessionResponse"
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
+        "401":
+          $ref: "#/components/responses/StandardErrorResponse"
+        "403":
+          $ref: "#/components/responses/StandardErrorResponse"
         "404":
           $ref: "#/components/responses/StandardErrorResponse"
         "409":
@@ -604,18 +625,29 @@ paths:
   /store/payments/webhook:
     post:
       tags: [Checkout]
-      summary: Payment gateway webhook for order finalization.
+      summary: Payment gateway webhook (asynchronous payment confirmation).
       description: |
-        Asynchronous payment-confirmation webhook. The raw body is verified with an HMAC-SHA512
-        signature (`PAYMENT_VERIFICATION_FAILED` on mismatch). Idempotent via the transaction
-        reference; the cart is converted to an order and a transaction record persisted.
-        Rejects when the paid amount differs from the cart total (`INVALID_PAYMENT_AMOUNT`).
+        Inbound payment-gateway webhook. The request body is consumed as RAW BYTES and
+        verified against the HMAC-SHA512 signature in the `x-paystack-signature` header
+        (computed over those exact bytes with the dedicated Paystack webhook secret — never
+        the API secret key) BEFORE any JSON parsing; a mismatch returns `401` and the event
+        is discarded.
+
+        After verification the payload is validated, mapped to an internal payment event, and
+        enqueued for background processing. The order is NEVER finalized synchronously from
+        this request — the background PaymentEventWorker finalizes it later, idempotently by
+        transaction reference. A `200` acknowledges receipt (and stops the gateway retrying);
+        a `401` (invalid signature) or `500` (processing outage) causes the gateway to retry.
+        Only `charge.success` events carrying our checkout metadata are processed; other
+        events are acknowledged and ignored (`handled: false`).
       security: []
       parameters:
-        - name: X-Payment-Signature
+        - name: x-paystack-signature
           in: header
           required: true
-          description: HMAC-SHA512 signature of the raw request body.
+          description: |
+            HMAC-SHA512 (hex) signature of the raw request body, computed by Paystack with
+            the dedicated webhook secret. Must be verified against the exact raw bytes.
           schema:
             type: string
       requestBody:
@@ -623,17 +655,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/WebhookPaymentFinalizeRequest"
+              $ref: "#/components/schemas/PaystackWebhookEvent"
       responses:
         "200":
-          description: Finalized order.
+          description: |
+            Acknowledged. The verified event was enqueued for background processing
+            (`handled: true`) or acknowledged but not applicable (`handled: false`).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Order"
+                $ref: "#/components/schemas/PaymentWebhookAck"
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
-        "409":
+        "401":
+          $ref: "#/components/responses/StandardErrorResponse"
+        "413":
           $ref: "#/components/responses/StandardErrorResponse"
         "500":
           $ref: "#/components/responses/StandardErrorResponse"
@@ -1100,6 +1136,17 @@ paths:
         Computes the signed variance between the returned line value and the replacement
         variant. Positive variance requires payment (`PAYMENT_REQUIRED` with a payment URL),
         negative variance dispatches a refund, zero is an even exchange.
+
+        The replacement price is NEVER client-supplied. It is resolved server-side from
+        the authoritative regional price for the order's originating region, so financial
+        inputs (amountMinor/currency) are not accepted from the client. When a payment is
+        required, the exact server-calculated amount/currency becomes a DURABLE payment
+        obligation BEFORE Paystack is contacted, and the returned `paymentUrl` lets the
+        customer complete that charge.
+
+        OWNERSHIP: when the caller presents a valid bearer JWT, its `customerId` claim is
+        the authoritative actor and must match the order's owner; a foreign order is
+        rejected (403). Guest requests (no token) remain allowed.
       security: []
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -1132,6 +1179,10 @@ paths:
                     format: uri
                     nullable: true
         "400":
+          $ref: "#/components/responses/StandardErrorResponse"
+        "401":
+          $ref: "#/components/responses/StandardErrorResponse"
+        "403":
           $ref: "#/components/responses/StandardErrorResponse"
         "404":
           $ref: "#/components/responses/StandardErrorResponse"
@@ -1831,6 +1882,8 @@ components:
               type: string
               enum:
                 - VALIDATION_ERROR
+                - CART_NOT_FOUND
+                - REGION_NOT_FOUND
                 - INVALID_EMAIL
                 - NEGATIVE_AMOUNT
                 - INVALID_CURRENCY
@@ -2192,12 +2245,23 @@ components:
 
     PaymentSessionResponse:
       type: object
-      required: [authorizationUrl]
+      description: |
+        Application-level result of payment initialization. Only the redirect target and the
+        deterministic application reference are exposed; the server-authoritative financial
+        breakdown is NOT returned to the client (it exists only for gateway/webhook
+        verification against the durable obligation).
+      required: [authorizationUrl, reference]
       properties:
         authorizationUrl:
           type: string
           format: uri
-          description: Hosted payment authorization URL returned by the gateway.
+          description: Hosted payment authorization URL the client redirects the customer to.
+        reference:
+          type: string
+          description: >
+            Deterministic application payment reference for this checkout (derived from the
+            cart id). Use it to correlate the checkout with provider/webhook records.
+            It is server-generated and never accepted from the client.
 
     # ------------------------------------------------------------------
     # Order DTOs
@@ -2228,6 +2292,30 @@ components:
           type: integer
           minimum: 0
           description: Captured order total in minor units (Kobo).
+        currency:
+          type: string
+          nullable: true
+          description: ISO-4217 currency code (lowercase) of the captured charge.
+        subtotalMinor:
+          type: integer
+          minimum: 0
+          description: Frozen merchandise subtotal at order time in minor units.
+        discountMinor:
+          type: integer
+          minimum: 0
+          description: Frozen promotion discount at order time in minor units.
+        taxMinor:
+          type: integer
+          minimum: 0
+          description: Frozen regional tax at order time in minor units.
+        shippingMinor:
+          type: integer
+          minimum: 0
+          description: Frozen shipping amount at order time in minor units.
+        insuranceMinor:
+          type: integer
+          minimum: 0
+          description: Frozen insurance premium at order time in minor units.
         fulfillmentStatus:
           type: string
           enum:
@@ -2802,26 +2890,76 @@ components:
 
     PaymentSessionRequest:
       type: object
+      description: |
+        Contains ONLY client-selectable checkout information. No financial values
+        (amountMinor, totalMinor, discountMinor, tax, shipping, insurance, currency) and no
+        customer identity (customerId) are accepted — the API derives all of these from
+        server state and the authenticated session. `returnUrl` is an optional redirect
+        hint only.
+      additionalProperties: false
       properties:
         returnUrl:
           type: string
           format: uri
           description: Optional redirect URL hint forwarded to the payment gateway.
 
-    WebhookPaymentFinalizeRequest:
+    PaystackWebhookEvent:
       type: object
-      required: [cartId, transactionReference, amountPaidMinor]
+      required: [event, data]
+      description: |
+        The raw payment-gateway webhook payload as received by /store/payments/webhook.
+        This is the PROVIDER's event shape (not our internal contract): the API verifies
+        the signature over the raw bytes, validates this payload, and maps it to an
+        internal payment event before enqueueing.
       properties:
-        cartId:
+        event:
           type: string
-          format: uuid
-        transactionReference:
+          description: Provider event type; only `charge.success` is processed.
+          example: charge.success
+        data:
+          type: object
+          required: [reference, amount]
+          description: Provider event data.
+          properties:
+            reference:
+              type: string
+              description: >
+                Provider transaction reference; echoed from the reference the API supplied
+                at initialization. Used as the idempotency key for background finalization.
+            amount:
+              type: integer
+              minimum: 0
+              description: Amount captured by the provider in integer minor units (kobo/cents).
+            currency:
+              type: string
+              description: >
+                ISO-4217 currency code of the captured charge. The API verifies it against
+                the durable payment obligation's currency; a mismatch is rejected.
+            status:
+              type: string
+              description: Provider transaction status (e.g. success).
+            metadata:
+              type: object
+              description: Metadata echoed from the initialization call.
+              properties:
+                cartId:
+                  type: string
+                  format: uuid
+                  description: Checkout cart id; present only for checkout payments.
+
+    PaymentWebhookAck:
+      type: object
+      required: [status, handled]
+      properties:
+        status:
           type: string
-          description: Gateway transaction reference; used as the idempotency key.
-        amountPaidMinor:
-          type: integer
-          minimum: 0
-          description: Amount captured by the gateway in minor units; must equal the cart total.
+          const: ok
+        handled:
+          type: boolean
+          description: >
+            True when the verified event was accepted for background processing; false when
+            it was acknowledged but not applicable (unrelated event type or no checkout
+            metadata).
 
     SubmitReviewRequest:
       type: object
@@ -2995,8 +3133,7 @@ components:
 
     SwapRequest:
       type: object
-      required:
-        [returnLineItemId, returnQuantity, newVariantId, newVariantPriceMinor]
+      required: [returnLineItemId, returnQuantity, newVariantId]
       properties:
         returnLineItemId:
           type: string
@@ -3007,10 +3144,6 @@ components:
         newVariantId:
           type: string
           format: uuid
-        newVariantPriceMinor:
-          type: integer
-          minimum: 0
-          description: Replacement variant unit price in minor units.
         paymentRedirectBaseUrl:
           type: string
           format: uri

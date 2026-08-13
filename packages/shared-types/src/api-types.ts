@@ -833,8 +833,25 @@ export interface paths {
         /**
          * Initialize a payment intent for the cart.
          * @description Initialises a cryptographic payment intent with the payment gateway and returns the
-         *     hosted authorization URL. Rejects empty carts, carts already initialized, or carts
-         *     already paid.
+         *     hosted authorization URL. The charge amount and currency are computed AUTHORITATIVELY
+         *     server-side (subtotal − discount + tax + shipping + insurance, all from durable server
+         *     state) and durably persisted as the payment obligation BEFORE the gateway is contacted;
+         *     no client-supplied total, discount, tax, shipping amount, or currency is trusted.
+         *
+         *     IDENTITY: the request body NEVER carries a customer identity. When the caller presents
+         *     a valid bearer JWT (issued by POST /store/auth), its `customerId` claim is the
+         *     authoritative actor for ownership checks. Guest checkout is supported (like every
+         *     /store/carts endpoint): without a token the cart is resolved purely by path id and the
+         *     cart's own server-stored customer/email. A customerId supplied in the body is never
+         *     accepted.
+         *
+         *     REQUEST: only client-selectable checkout information is accepted (see
+         *     PaymentSessionRequest). FINANCIAL VALUES are never accepted from the client.
+         *
+         *     RESPONSE: only the application-level result (authorizationUrl, reference) is returned.
+         *     No raw provider response, database row, secret, or gateway key is exposed.
+         *
+         *     Rejects empty carts, carts already initialized, or carts already paid.
          */
         post: {
             parameters: {
@@ -861,6 +878,8 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -882,39 +901,55 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Payment gateway webhook for order finalization.
-         * @description Asynchronous payment-confirmation webhook. The raw body is verified with an HMAC-SHA512
-         *     signature (`PAYMENT_VERIFICATION_FAILED` on mismatch). Idempotent via the transaction
-         *     reference; the cart is converted to an order and a transaction record persisted.
-         *     Rejects when the paid amount differs from the cart total (`INVALID_PAYMENT_AMOUNT`).
+         * Payment gateway webhook (asynchronous payment confirmation).
+         * @description Inbound payment-gateway webhook. The request body is consumed as RAW BYTES and
+         *     verified against the HMAC-SHA512 signature in the `x-paystack-signature` header
+         *     (computed over those exact bytes with the dedicated Paystack webhook secret — never
+         *     the API secret key) BEFORE any JSON parsing; a mismatch returns `401` and the event
+         *     is discarded.
+         *
+         *     After verification the payload is validated, mapped to an internal payment event, and
+         *     enqueued for background processing. The order is NEVER finalized synchronously from
+         *     this request — the background PaymentEventWorker finalizes it later, idempotently by
+         *     transaction reference. A `200` acknowledges receipt (and stops the gateway retrying);
+         *     a `401` (invalid signature) or `500` (processing outage) causes the gateway to retry.
+         *     Only `charge.success` events carrying our checkout metadata are processed; other
+         *     events are acknowledged and ignored (`handled: false`).
          */
         post: {
             parameters: {
                 query?: never;
                 header: {
-                    /** @description HMAC-SHA512 signature of the raw request body. */
-                    "X-Payment-Signature": string;
+                    /**
+                     * @description HMAC-SHA512 (hex) signature of the raw request body, computed by Paystack with
+                     *     the dedicated webhook secret. Must be verified against the exact raw bytes.
+                     */
+                    "x-paystack-signature": string;
                 };
                 path?: never;
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["WebhookPaymentFinalizeRequest"];
+                    "application/json": components["schemas"]["PaystackWebhookEvent"];
                 };
             };
             responses: {
-                /** @description Finalized order. */
+                /**
+                 * @description Acknowledged. The verified event was enqueued for background processing
+                 *     (`handled: true`) or acknowledged but not applicable (`handled: false`).
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Order"];
+                        "application/json": components["schemas"]["PaymentWebhookAck"];
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
-                409: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                413: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
             };
         };
@@ -1680,6 +1715,17 @@ export interface paths {
          * @description Computes the signed variance between the returned line value and the replacement
          *     variant. Positive variance requires payment (`PAYMENT_REQUIRED` with a payment URL),
          *     negative variance dispatches a refund, zero is an even exchange.
+         *
+         *     The replacement price is NEVER client-supplied. It is resolved server-side from
+         *     the authoritative regional price for the order's originating region, so financial
+         *     inputs (amountMinor/currency) are not accepted from the client. When a payment is
+         *     required, the exact server-calculated amount/currency becomes a DURABLE payment
+         *     obligation BEFORE Paystack is contacted, and the returned `paymentUrl` lets the
+         *     customer complete that charge.
+         *
+         *     OWNERSHIP: when the caller presents a valid bearer JWT, its `customerId` claim is
+         *     the authoritative actor and must match the order's owner; a foreign order is
+         *     rejected (403). Guest requests (no token) remain allowed.
          */
         post: {
             parameters: {
@@ -1715,6 +1761,8 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -2707,7 +2755,7 @@ export interface components {
                  * @example OUT_OF_STOCK
                  * @enum {string}
                  */
-                code: "VALIDATION_ERROR" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "REGION_NOT_FOUND" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
+                code: "VALIDATION_ERROR" | "CART_NOT_FOUND" | "REGION_NOT_FOUND" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "REGION_NOT_FOUND" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
                 /** @example Requested quantity exceeds available inventory. */
                 message: string;
                 details?: {
@@ -2875,12 +2923,20 @@ export interface components {
             /** @description Insurance premium in minor units. */
             premiumMinor: number;
         };
+        /**
+         * @description Application-level result of payment initialization. Only the redirect target and the
+         *     deterministic application reference are exposed; the server-authoritative financial
+         *     breakdown is NOT returned to the client (it exists only for gateway/webhook
+         *     verification against the durable obligation).
+         */
         PaymentSessionResponse: {
             /**
              * Format: uri
-             * @description Hosted payment authorization URL returned by the gateway.
+             * @description Hosted payment authorization URL the client redirects the customer to.
              */
             authorizationUrl: string;
+            /** @description Deterministic application payment reference for this checkout (derived from the cart id). Use it to correlate the checkout with provider/webhook records. It is server-generated and never accepted from the client. */
+            reference: string;
         };
         /** @description Immutable order DTO with fulfilment and payment state. */
         Order: {
@@ -2892,6 +2948,18 @@ export interface components {
             customerId: string;
             /** @description Captured order total in minor units (Kobo). */
             totalAmountMinor: number;
+            /** @description ISO-4217 currency code (lowercase) of the captured charge. */
+            currency?: string | null;
+            /** @description Frozen merchandise subtotal at order time in minor units. */
+            subtotalMinor?: number;
+            /** @description Frozen promotion discount at order time in minor units. */
+            discountMinor?: number;
+            /** @description Frozen regional tax at order time in minor units. */
+            taxMinor?: number;
+            /** @description Frozen shipping amount at order time in minor units. */
+            shippingMinor?: number;
+            /** @description Frozen insurance premium at order time in minor units. */
+            insuranceMinor?: number;
             /** @enum {string} */
             fulfillmentStatus: "unfulfilled" | "ready_for_dispatch" | "partially_fulfilled" | "fulfilled" | "returned" | "on_hold";
             /** @enum {string} */
@@ -3168,6 +3236,13 @@ export interface components {
         SetShippingAddressRequest: {
             shippingAddress: components["schemas"]["ShippingAddress"];
         };
+        /**
+         * @description Contains ONLY client-selectable checkout information. No financial values
+         *     (amountMinor, totalMinor, discountMinor, tax, shipping, insurance, currency) and no
+         *     customer identity (customerId) are accepted — the API derives all of these from
+         *     server state and the authenticated session. `returnUrl` is an optional redirect
+         *     hint only.
+         */
         PaymentSessionRequest: {
             /**
              * Format: uri
@@ -3175,13 +3250,43 @@ export interface components {
              */
             returnUrl?: string;
         };
-        WebhookPaymentFinalizeRequest: {
-            /** Format: uuid */
-            cartId: string;
-            /** @description Gateway transaction reference; used as the idempotency key. */
-            transactionReference: string;
-            /** @description Amount captured by the gateway in minor units; must equal the cart total. */
-            amountPaidMinor: number;
+        /**
+         * @description The raw payment-gateway webhook payload as received by /store/payments/webhook.
+         *     This is the PROVIDER's event shape (not our internal contract): the API verifies
+         *     the signature over the raw bytes, validates this payload, and maps it to an
+         *     internal payment event before enqueueing.
+         */
+        PaystackWebhookEvent: {
+            /**
+             * @description Provider event type; only `charge.success` is processed.
+             * @example charge.success
+             */
+            event: string;
+            /** @description Provider event data. */
+            data: {
+                /** @description Provider transaction reference; echoed from the reference the API supplied at initialization. Used as the idempotency key for background finalization. */
+                reference: string;
+                /** @description Amount captured by the provider in integer minor units (kobo/cents). */
+                amount: number;
+                /** @description ISO-4217 currency code of the captured charge. The API verifies it against the durable payment obligation's currency; a mismatch is rejected. */
+                currency?: string;
+                /** @description Provider transaction status (e.g. success). */
+                status?: string;
+                /** @description Metadata echoed from the initialization call. */
+                metadata?: {
+                    /**
+                     * Format: uuid
+                     * @description Checkout cart id; present only for checkout payments.
+                     */
+                    cartId?: string;
+                };
+            };
+        };
+        PaymentWebhookAck: {
+            /** @constant */
+            status: "ok";
+            /** @description True when the verified event was accepted for background processing; false when it was acknowledged but not applicable (unrelated event type or no checkout metadata). */
+            handled: boolean;
         };
         SubmitReviewRequest: {
             rating: number;
@@ -3276,8 +3381,6 @@ export interface components {
             returnQuantity: number;
             /** Format: uuid */
             newVariantId: string;
-            /** @description Replacement variant unit price in minor units. */
-            newVariantPriceMinor: number;
             /**
              * Format: uri
              * @description Base URL for the payment redirect when variance requires payment.

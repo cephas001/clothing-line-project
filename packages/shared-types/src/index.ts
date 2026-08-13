@@ -71,8 +71,8 @@ export type SetShippingAddressRequest =
   components["schemas"]["SetShippingAddressRequest"];
 export type PaymentSessionRequest =
   components["schemas"]["PaymentSessionRequest"];
-export type WebhookPaymentFinalizeRequest =
-  components["schemas"]["WebhookPaymentFinalizeRequest"];
+export type PaystackWebhookEvent =
+  components["schemas"]["PaystackWebhookEvent"];
 export type SubmitReviewRequest = components["schemas"]["SubmitReviewRequest"];
 export type AuthenticateRequest = components["schemas"]["AuthenticateRequest"];
 export type RegisterCustomerRequest =
@@ -161,7 +161,7 @@ export type InitializePaymentSessionResponse =
 export type CompleteCheckoutResponse =
   paths["/store/carts/{id}/complete"]["post"]["responses"][200]["content"]["application/json"];
 
-export type WebhookPaymentFinalizeResponse =
+export type PaymentWebhookAck =
   paths["/store/payments/webhook"]["post"]["responses"][200]["content"]["application/json"];
 
 // Customers Context
