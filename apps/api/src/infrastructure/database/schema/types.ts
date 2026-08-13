@@ -402,4 +402,26 @@ export interface Database {
     comment: string | null;
     created_at: Generated<string>;
   };
+
+  // ---------------------------------------------------------------------------
+  // Audit
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Cross-cutting audit trail written by PostgresAuditLogService on behalf of
+   * IAuditLogService.logAction. The actor is free-form text (admin id, customer
+   * id, or the literal "system") — never a foreign key, since many events are
+   * system-initiated. `details` is the caller-supplied StructuredMeta payload.
+   */
+  audit_log: {
+    /** Application-generated text UUID (IIdGenerator); always supplied on insert. */
+    id: string;
+    /** Non-null actor identifier: the interface requires a non-empty string. */
+    actor_id: string;
+    /** Canonical action name, e.g. "PRODUCT_CREATE". */
+    action: string;
+    /** Action-specific structured payload; serialized JSONB. */
+    details: JsonB;
+    created_at: Generated<string>;
+  };
 }
