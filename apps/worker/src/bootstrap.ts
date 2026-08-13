@@ -91,11 +91,18 @@ export function bootstrapWorker(
     unwired: useCases.report.unwired.length,
   });
 
-  // --- Workers: PaymentEventWorker consumes the composed FinalizeOrderTransactionUseCase ---
+  // --- Workers: PaymentEventWorker verifies THEN finalizes -------------------
+  // Financial verification (VerifyPaymentEventUseCase) runs before
+  // FinalizeOrderTransactionUseCase for every checkout event, and
+  // VerifySwapPaymentEventUseCase before FinalizeSwapTransactionUseCase for
+  // every swap event (dispatched on the payload's obligationType).
   const workers = buildWorkers({
     logger,
     bullConnection: infrastructure.bullConnection,
+    verifyPaymentEvent: useCases.useCases.checkout.verifyPaymentEvent,
     finalizeOrderTransaction: useCases.useCases.checkout.finalizeOrderTransaction,
+    verifySwapPaymentEvent: useCases.useCases.logistics.verifySwapPaymentEvent,
+    finalizeSwapTransaction: useCases.useCases.logistics.finalizeSwapTransaction,
     bulkCatalogImportProcessor: options.bulkCatalogImportProcessor,
   });
 

@@ -9,13 +9,29 @@
 //   only when `run()` is called, so the composition root can build every
 //   worker at bootstrap and start them together via start()/WorkerRegistry.
 // - Log structured context (queue, jobId, attemptsMade) around every job and
-//   classify failures before rethrowing so BullMQ applies the producer's
-//   configured retry/backoff:
-//     1. permanent payload/validation failures (VALIDATION_ERROR DomainError),
-//     2. expected application/domain failures (other DomainError codes),
-//     3. transient infrastructure failures (RepositoryError),
-//     4. unexpected failures.
-//   No failure is swallowed; BullMQ decides retry semantics.
+//   CLASSIFY failures before deciding retry semantics:
+//
+//     kind      | condition                              | behavior
+//     permanent | DomainError VALIDATION_ERROR /          | moved to failed with
+//               | INVALID_INPUT (malformed payload/input)| NO transient retry
+//     terminal  | domain conflict / already-completed /  | moved to failed with
+//               | data anomaly (DUPLICATE_TRANSACTION,   | NO transient retry
+//               | INVALID_PAYMENT_AMOUNT, INVALID_*...)  |
+//     retry     | transient CONNECTION/TIMEOUT, provider | BullMQ applies the
+//               | /infrastructure errors, unexpected     | producer's configured
+//               | errors                                 | attempts + backoff
+//
+//   Permanent and terminal failures throw `PermanentJobFailure`, whose
+//   `name` is "UnrecoverableError" — BullMQ's `shouldRetryJob` then moves the
+//   job to failed even when attempts remain, so a poison payload or an
+//   already-resolved operation is never retried into an infinite backoff loop.
+//   All other failures are rethrown untouched so BullMQ applies the producer's
+//   configured retry/backoff; exhausted attempts land in the queue's failed
+//   state for the existing dead-letter tooling to inspect and replay.
+// - Idempotent resolution of already-completed operations is owned by the use
+//   cases (e.g. FinalizeOrderTransactionUseCase returns the existing order for
+//   a duplicate reference); if a domain-conflict error still reaches the
+//   worker it is classified terminal and never retried.
 // - Never opens transactions: use cases invoked by handlers own the
 //   ITransactionManager boundary.
 
@@ -24,6 +40,25 @@ import type { ConnectionOptions, Job, WorkerOptions } from "bullmq";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { RepositoryErrorCode } from "@api/domain/interfaces/shared/errors/RepositoryError";
+
+/**
+ * Failure raised for errors that must NOT be transiently retried: malformed
+ * payloads (permanent) and domain conflicts / already-completed / data
+ * anomalies (terminal). `name` is set to "UnrecoverableError" because BullMQ's
+ * `shouldRetryJob` skips retries for errors with that name, moving the job
+ * straight to the failed state (where the dead-letter tooling can inspect it).
+ */
+export class PermanentJobFailure extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(`[${code}] ${message}`);
+    this.name = "UnrecoverableError";
+    this.code = code;
+  }
+}
+
+export type JobFailureKind = "permanent" | "terminal" | "retry";
 
 /** Minimal infra-owned view of a job; keeps BullMQ types out of handlers. */
 export interface WorkerJob<TPayload> {
@@ -115,43 +150,123 @@ export class QueueWorker<TPayload> {
         jobId: job.id,
       });
     } catch (err) {
-      this.logFailure(err, job);
+      const kind = classifyError(err);
+      this.logFailure(err, kind, job);
+      // Permanent/terminal failures are never transiently retried: throw a
+      // PermanentJobFailure (name "UnrecoverableError") so BullMQ moves the
+      // job to failed immediately. Everything else is rethrown untouched so
+      // BullMQ applies the producer's configured retry/backoff.
+      if (kind !== "retry") {
+        throw toPermanentFailure(err);
+      }
       throw err;
     }
   }
 
-  private logFailure(err: unknown, job: WorkerJob<TPayload>): void {
-    const context = { queue: this.queueName, jobId: job.id };
+  private logFailure(
+    err: unknown,
+    kind: JobFailureKind,
+    job: WorkerJob<TPayload>,
+  ): void {
+    const context = { queue: this.queueName, jobId: job.id, code: codeOf(err) };
 
-    if (err instanceof DomainError) {
-      if (err.code === "VALIDATION_ERROR") {
-        this.logger.error(
-          "Worker failed job: permanent payload/validation failure",
-          { ...context, code: err.code, err },
-        );
-      } else {
-        this.logger.warn(
-          "Worker failed job: expected application/domain failure",
-          { ...context, code: err.code, err },
-        );
-      }
+    if (kind === "permanent") {
+      this.logger.error(
+        "Worker failed job: permanent payload/validation failure (no retry)",
+        { ...context, err },
+      );
       return;
     }
-
-    if (isRepositoryError(err)) {
-      this.logger.error("Worker failed job: transient infrastructure failure", {
-        ...context,
-        code: err.code,
-        err,
-      });
+    if (kind === "terminal") {
+      this.logger.warn(
+        "Worker failed job: terminal domain conflict / already-completed / data anomaly (no retry)",
+        { ...context, err },
+      );
       return;
     }
-
-    this.logger.error("Worker failed job: unexpected failure", {
-      ...context,
-      err,
-    });
+    this.logger.error(
+      "Worker failed job: transient failure (will retry per producer policy)",
+      { ...context, err },
+    );
   }
+}
+
+/**
+ * Classify a thrown error into retry semantics:
+ * - "permanent" — malformed payload/input; retrying cannot fix it.
+ * - "terminal"  — domain conflict / already-completed / data anomaly; the
+ *   operation outcome is already determined and retrying cannot change it.
+ * - "retry"     — transient connection/timeout, provider/infrastructure, or
+ *   unexpected errors; BullMQ applies the producer's attempts + backoff.
+ */
+export function classifyError(err: unknown): JobFailureKind {
+  if (err instanceof DomainError) {
+    switch (err.code) {
+      case "VALIDATION_ERROR":
+      case "INVALID_INPUT":
+        return "permanent";
+      case "DUPLICATE_TRANSACTION":
+      case "INVALID_PAYMENT_AMOUNT":
+      case "INVALID_CURRENCY":
+      case "PAYMENT_VERIFICATION_FAILED":
+      case "INVALID_OPERATION":
+      case "INVALID_STATE":
+      case "INVALID_STATUS_TRANSITION":
+      case "ORDER_ALREADY_FULFILLED":
+      case "INVALID_RETURN_QUANTITY":
+      case "INVALID_RETURN_ITEM":
+      case "UNSUPPORTED_OPERATION":
+      case "PAYMENT_REQUIRED":
+      case "PAYMENT_DECLINED":
+      case "REFUND_REQUIRES_REVIEW":
+      case "CART_NOT_FOUND":
+      case "RESOURCE_NOT_FOUND":
+      case "REGION_NOT_FOUND":
+      case "OUT_OF_STOCK":
+        return "terminal";
+      case "INTERNAL_ERROR":
+      case "JOB_PROCESSING_ERROR":
+      case "EXTERNAL_SERVICE_TIMEOUT":
+      case "EXTERNAL_SERVICE_UNAVAILABLE":
+      case "EXTERNAL_SERVICE_ERROR":
+      case "LOCK_ACQUISITION_FAILED":
+        return "retry";
+      default:
+        return "retry";
+    }
+  }
+
+  // Repository/infrastructure errors (transient by default). Connection and
+  // timeout are the canonical transient cases; anything else also retries per
+  // policy since a RepositoryError escaping a use case is unexpected.
+  if (isRepositoryError(err)) {
+    return "retry";
+  }
+
+  // Unexpected errors: retry according to the established producer policy.
+  return "retry";
+}
+
+/** Wrap an original error in a PermanentJobFailure preserving its code/message. */
+function toPermanentFailure(err: unknown): PermanentJobFailure {
+  if (err instanceof PermanentJobFailure) {
+    return err;
+  }
+  if (err instanceof DomainError) {
+    return new PermanentJobFailure(err.code, err.message);
+  }
+  const code = codeOf(err) ?? "UNKNOWN";
+  const message = err instanceof Error ? err.message : "Job failed permanently.";
+  return new PermanentJobFailure(code, message);
+}
+
+/** Extract a stable error code for logging when one exists. */
+function codeOf(err: unknown): string | undefined {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
 }
 
 /** Narrow an unknown error to one carrying a RepositoryErrorCode. */
