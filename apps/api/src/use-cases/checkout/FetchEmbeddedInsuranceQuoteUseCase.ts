@@ -137,7 +137,10 @@ export class FetchEmbeddedInsuranceQuoteUseCase {
     // --- Optionally persist quote metadata on cart (non-mandatory)
     try {
       const persist = async () => {
-        // Attach lastInsuranceQuoteMinor and lastInsuranceQuoteAt to cart metadata
+        // Persist the server-computed premium durably on the cart (the
+        // authoritative source the checkout total reads) and mirror it into
+        // metadata for backwards compatibility.
+        cart.recordInsuranceQuote(premiumMinor);
         cart.setMetadata("lastInsuranceQuoteMinor", premiumMinor);
         cart.setMetadata("lastInsuranceQuoteAt", new Date().toISOString());
         await this.cartRepository.save(cart);
