@@ -32,6 +32,7 @@ import { NodeCryptographyService } from "../services/NodeCryptographyService";
 import { RedisSessionRevocationService } from "../services/RedisSessionRevocationService";
 import { JwtTokenService } from "../services/JwtTokenService";
 import { BullMqQueueService } from "../services/BullMqQueueService";
+import { PostgresAuditLogService } from "../services/PostgresAuditLogService";
 import type { Database } from "../database/schema/types";
 import type { AppConfig } from "./config";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
@@ -64,6 +65,8 @@ export interface InfrastructureDependencies {
   queueService: BullMqQueueService;
   /** Concrete KyselyTransactionManager; satisfies ITransactionManager. */
   transactionManager: KyselyTransactionManager;
+  /** Concrete PostgresAuditLogService; satisfies IAuditLogService. */
+  auditLogService: PostgresAuditLogService;
   /** The shared Kysely singleton (existing pool, reused). */
   db: Kysely<Database>;
   /** The shared transaction context repositories resolve connections through. */
@@ -107,6 +110,10 @@ export function buildInfrastructure(
 
   const queueService = new BullMqQueueService({ connection: bullConnection });
   const transactionManager = new KyselyTransactionManager(db, transactionContext);
+  const auditLogService = new PostgresAuditLogService(
+    transactionContext,
+    idGenerator,
+  );
 
   return {
     config,
@@ -118,6 +125,7 @@ export function buildInfrastructure(
     tokenService,
     queueService,
     transactionManager,
+    auditLogService,
     db,
     transactionContext,
     redis,

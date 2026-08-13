@@ -4,8 +4,9 @@
 //
 // PaymentEventWorker receives the FinalizeOrderTransactionUseCase instance
 // constructed by the checkout use-case factory (dependency injection — its
-// business logic is never recreated here). It is only built when that use case
-// exists, which in turn requires IAuditLogService.
+// business logic is never recreated here). It is built whenever that use case
+// is present, which now always holds because PostgresAuditLogService implements
+// IAuditLogService in the composition root.
 //
 // BulkCatalogImportWorker requires an injected processor because its consuming
 // application use case (ProcessBulkCatalogImportUseCase) does not exist yet; it
@@ -29,7 +30,7 @@ export interface WorkerBuildOptions {
   logger: ILogger;
   /** BullMQ connection config derived from REDIS_URL by the composition root. */
   bullConnection: ConnectionOptions;
-  /** Provided by the checkout use-case factory; present only when IAuditLogService exists. */
+  /** Provided by the checkout use-case factory (always present once IAuditLogService is implemented). */
   finalizeOrderTransaction?: FinalizeOrderTransactionUseCase;
   /** Provided once ProcessBulkCatalogImportUseCase (or an equivalent processor) exists. */
   bulkCatalogImportProcessor?: BulkCatalogImportProcessor;

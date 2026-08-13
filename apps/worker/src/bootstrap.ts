@@ -14,10 +14,10 @@
 //   6. graceful shutdown in dependency order (workers -> queue -> db -> redis).
 //
 // Unwired capabilities are REPORTED, never faked:
-//   - IAuditLogService has no implementation yet. Every use case depends on it,
-//     so no use case can be constructed until one is supplied. Passing an
-//     `auditLogService` to bootstrapWorker({ auditLogService }) activates the
-//     full use-case graph and the PaymentEventWorker.
+//   - IAuditLogService is implemented by PostgresAuditLogService (constructed
+//     in buildInfrastructure) and injected into every use case that needs it.
+//     An optional `auditLogService` override may be supplied to
+//     bootstrapWorker({ auditLogService }) and replaces the default.
 //   - BulkCatalogImportWorker stays unavailable until a processor is supplied.
 
 import type { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
@@ -34,10 +34,9 @@ import { buildWorkers, WorkerComposition } from "./composition/workers";
 
 export interface WorkerBootstrapOptions {
   /**
-   * IAuditLogService implementation. There is no implementation in the
-   * codebase yet; every use case requires one, so this gates the use-case
-   * graph AND the PaymentEventWorker. Pass a real implementation when it
-   * exists — never a fake.
+   * Optional IAuditLogService override. Defaults to the concrete
+   * PostgresAuditLogService constructed by buildInfrastructure; supply a
+   * different implementation only to replace the default (e.g. in tests).
    */
   auditLogService?: IAuditLogService;
   /** Processor for BulkCatalogImportWorker; supplied once its use case exists. */
@@ -48,8 +47,7 @@ export interface WorkerRuntime {
   config: ReturnType<typeof loadAppConfig>;
   infrastructure: InfrastructureDependencies;
   repositories: Repositories;
-  /** Null until an IAuditLogService is supplied. */
-  useCases: UseCaseComposition | null;
+  useCases: UseCaseComposition;
   workers: WorkerComposition;
   /**
    * Explicitly start consuming workers. Never invoked by importing this
@@ -74,38 +72,30 @@ export function bootstrapWorker(
   const repositories = buildRepositories(infrastructure.transactionContext);
   const logger = infrastructure.logger;
 
-  // --- Use cases: gated on IAuditLogService (unimplemented today) ----------
-  let useCases: UseCaseComposition | null = null;
-  if (options.auditLogService) {
-    useCases = buildUseCases({
-      ...repositories,
-      logger: infrastructure.logger,
-      idGenerator: infrastructure.idGenerator,
-      auditLogService: options.auditLogService,
-      transactionManager: infrastructure.transactionManager,
-      queueService: infrastructure.queueService,
-      hashingService: infrastructure.hashingService,
-      tokenService: infrastructure.tokenService,
-      sessionRevocationService: infrastructure.sessionRevocationService,
-      cryptographyService: infrastructure.cryptographyService,
-    });
-    logger.info("Use cases composed", {
-      wired: useCases.report.wired.length,
-      unwired: useCases.report.unwired.length,
-    });
-  } else {
-    logger.warn(
-      "IAuditLogService has no implementation yet; no use cases or the " +
-        "PaymentEventWorker can be constructed. Implement it and pass it to " +
-        "bootstrapWorker({ auditLogService }) to activate them.",
-    );
-  }
+  // --- Use cases: every use case receives the concrete IAuditLogService -------
+  const auditLogService = options.auditLogService ?? infrastructure.auditLogService;
+  const useCases = buildUseCases({
+    ...repositories,
+    logger: infrastructure.logger,
+    idGenerator: infrastructure.idGenerator,
+    auditLogService,
+    transactionManager: infrastructure.transactionManager,
+    queueService: infrastructure.queueService,
+    hashingService: infrastructure.hashingService,
+    tokenService: infrastructure.tokenService,
+    sessionRevocationService: infrastructure.sessionRevocationService,
+    cryptographyService: infrastructure.cryptographyService,
+  });
+  logger.info("Use cases composed", {
+    wired: useCases.report.wired.length,
+    unwired: useCases.report.unwired.length,
+  });
 
   // --- Workers: PaymentEventWorker consumes the composed FinalizeOrderTransactionUseCase ---
   const workers = buildWorkers({
     logger,
     bullConnection: infrastructure.bullConnection,
-    finalizeOrderTransaction: useCases?.useCases.checkout.finalizeOrderTransaction,
+    finalizeOrderTransaction: useCases.useCases.checkout.finalizeOrderTransaction,
     bulkCatalogImportProcessor: options.bulkCatalogImportProcessor,
   });
 
@@ -140,16 +130,12 @@ export function bootstrapWorker(
     describe(): string {
       const lines: string[] = [];
       lines.push(`Redis: ${config.redisUrl}`);
-      if (useCases) {
-        lines.push(
-          `Use cases: ${useCases.report.wired.length} wired, ` +
-            `${useCases.report.unwired.length} unwired`,
-        );
-        for (const u of useCases.report.unwired) {
-          lines.push(`  unwired: ${u.useCase} (missing ${u.missingDependency})`);
-        }
-      } else {
-        lines.push("Use cases: none wired (IAuditLogService not implemented)");
+      lines.push(
+        `Use cases: ${useCases.report.wired.length} wired, ` +
+          `${useCases.report.unwired.length} unwired`,
+      );
+      for (const u of useCases.report.unwired) {
+        lines.push(`  unwired: ${u.useCase} (missing ${u.missingDependency})`);
       }
       lines.push(
         `Workers: ${workers.report.started.join(", ") || "none started"}`,
