@@ -55,6 +55,18 @@ export interface OrderProps {
   cartId: string;
   customerId: string;
   totalAmountMinor: number;
+  /** ISO-4217 currency code (lowercase) of the captured charge. */
+  currency?: string | null;
+  /** Frozen subtotal (Σ line totals) at order time, in minor units. */
+  subtotalMinor?: number;
+  /** Frozen promotion discount at order time, in minor units. */
+  discountMinor?: number;
+  /** Frozen regional tax at order time, in minor units. */
+  taxMinor?: number;
+  /** Frozen shipping amount at order time, in minor units. */
+  shippingMinor?: number;
+  /** Frozen insurance premium at order time, in minor units. */
+  insuranceMinor?: number;
   fulfillmentStatus?: FulfillmentStatus;
   paymentStatus?: PaymentStatus;
   transactionReference?: string | null;
@@ -80,6 +92,10 @@ export interface OrderProps {
  * - Keeps an immutable financial baseline (_totalAmountMinor) and exposes
  *   methods to mutate fulfillment/payment state and apply edits.
  * - All monetary values are integers in minor units (Kobo).
+ * - The financial snapshot (currency, subtotal, discount, tax, shipping,
+ *   insurance) is FROZEN at checkout from the durable payment obligation — the
+ *   order never depends on today's product prices, regional pricing,
+ *   promotions, or taxes to reconstruct what the customer agreed to pay.
  */
 export class Order {
   // -------------------------
@@ -90,6 +106,16 @@ export class Order {
   readonly customerId: string;
   private _totalAmountMinor: number; // Immutable financial baseline
   public readonly createdAt: string;
+
+  // -------------------------
+  // Frozen financial snapshot
+  // -------------------------
+  public readonly currency: string | null;
+  private readonly _subtotalMinor: number;
+  private readonly _discountMinor: number;
+  private readonly _taxMinor: number;
+  private readonly _shippingMinor: number;
+  private readonly _insuranceMinor: number;
 
   // -------------------------
   // State machines
@@ -145,6 +171,29 @@ export class Order {
     this.customerId = props.customerId;
     this._totalAmountMinor = props.totalAmountMinor;
     this.createdAt = props.createdAt || new Date().toISOString();
+
+    // Frozen financial snapshot (defaults preserve legacy/pre-foundation rows).
+    this.currency = props.currency ?? null;
+    this._subtotalMinor = props.subtotalMinor ?? props.totalAmountMinor;
+    this._discountMinor = props.discountMinor ?? 0;
+    this._taxMinor = props.taxMinor ?? 0;
+    this._shippingMinor = props.shippingMinor ?? 0;
+    this._insuranceMinor = props.insuranceMinor ?? 0;
+
+    for (const [label, value] of [
+      ["subtotalMinor", this._subtotalMinor],
+      ["discountMinor", this._discountMinor],
+      ["taxMinor", this._taxMinor],
+      ["shippingMinor", this._shippingMinor],
+      ["insuranceMinor", this._insuranceMinor],
+    ] as const) {
+      if (!Number.isInteger(value) || value < 0) {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          `Order ${label} must be a non-negative integer in minor units.`,
+        );
+      }
+    }
 
     // Initial states
     this._fulfillmentStatus = props.fulfillmentStatus || "unfulfilled";
@@ -449,6 +498,79 @@ export class Order {
     );
   }
 
+  /**
+   * applySwap
+   * - Apply a confirmed swap to the order's line items and adjust the total.
+   * - The returned quantity is removed from the existing line (or the whole
+   *   line when fully returned) and a replacement line is added for the new
+   *   variant at its frozen unit price.
+   * - The total is adjusted ONLY by the swap variance (original value removed,
+   *   replacement value added), preserving the order's frozen financial
+   *   structure (discount/tax/shipping/insurance are not recomputed).
+   * - Validates that the returned quantity does not exceed the line quantity.
+   */
+  public applySwap(props: {
+    returnLineItemId: string;
+    returnQuantity: number;
+    newVariantId: string;
+    unitPriceMinor: number;
+    appliedBy: string;
+    appliedAt: string;
+  }): void {
+    if (!props.appliedBy || props.appliedBy.trim() === "") {
+      throw new DomainError("VALIDATION_ERROR", "appliedBy is required.");
+    }
+    const line = this._lineItems.find(
+      (li) => li.id === props.returnLineItemId,
+    );
+    if (!line) {
+      throw new DomainError(
+        "INVALID_RETURN_ITEM",
+        "Line item not found on order.",
+      );
+    }
+    if (
+      !Number.isInteger(props.returnQuantity) ||
+      props.returnQuantity < 1 ||
+      props.returnQuantity > line.quantity
+    ) {
+      throw new DomainError(
+        "INVALID_RETURN_QUANTITY",
+        "Cannot swap more items than were ordered on the line.",
+      );
+    }
+    if (!Number.isInteger(props.unitPriceMinor) || props.unitPriceMinor < 0) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Replacement unit price must be a non-negative integer in minor units.",
+      );
+    }
+
+    const originalValueMinor = Math.floor(
+      line.unitPriceMinor * props.returnQuantity,
+    );
+    const newValueMinor = Math.floor(props.unitPriceMinor * props.returnQuantity);
+
+    const remaining = line.quantity - props.returnQuantity;
+    if (remaining <= 0) {
+      this._lineItems = this._lineItems.filter(
+        (li) => li.id !== line.id,
+      );
+    } else {
+      line.quantity = remaining;
+    }
+
+    this._lineItems.push({
+      id: `${line.id}-swap-${props.newVariantId}`,
+      variantId: props.newVariantId,
+      quantity: props.returnQuantity,
+      unitPriceMinor: props.unitPriceMinor,
+    });
+
+    this._totalAmountMinor =
+      this._totalAmountMinor - originalValueMinor + newValueMinor;
+  }
+
   // -------------------------
   // Read-only accessors
   // -------------------------
@@ -463,6 +585,26 @@ export class Order {
 
   get totalAmountMinor(): number {
     return this._totalAmountMinor;
+  }
+
+  get subtotalMinor(): number {
+    return this._subtotalMinor;
+  }
+
+  get discountMinor(): number {
+    return this._discountMinor;
+  }
+
+  get taxMinor(): number {
+    return this._taxMinor;
+  }
+
+  get shippingMinor(): number {
+    return this._shippingMinor;
+  }
+
+  get insuranceMinor(): number {
+    return this._insuranceMinor;
   }
 
   get lineItems(): OrderLineItem[] {

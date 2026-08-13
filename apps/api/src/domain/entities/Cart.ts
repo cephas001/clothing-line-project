@@ -2,6 +2,7 @@
 import { CartLineItem } from "@api-domain-entities/CartLineItem";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { Promotion } from "@api/domain/entities/Promotion";
+import { PaymentAmountBreakdown } from "@api/domain/shared/contracts";
 import { JsonObject, JsonValue } from "@api/domain/shared/json";
 
 /**
@@ -21,6 +22,12 @@ export interface CartProps {
   countryCode?: string | null;
   shippingAddress?: JsonObject | null;
   taxAmountMinor?: number | null;
+  /** Server-persisted selected shipping amount in minor units; null when unset. */
+  shippingAmountMinor?: number | null;
+  /** Server-persisted selected shipping service level. */
+  shippingServiceLevel?: string | null;
+  /** Server-persisted insurance premium in minor units; null when not opted in. */
+  insuranceAmountMinor?: number | null;
   metadata?: JsonObject;
   frozen?: boolean;
   frozenReason?: string | null;
@@ -32,6 +39,7 @@ export interface CartProps {
   paymentInitialized?: boolean;
   paymentAuthorizationUrl?: string | null;
   paymentInitializedAt?: string | null;
+  paymentReference?: string | null;
 }
 
 /**
@@ -60,6 +68,9 @@ export class Cart {
   public countryCode: string | null;
   public shippingAddress: JsonObject | null;
   public taxAmountMinor: number | null;
+  public shippingAmountMinor: number | null;
+  public shippingServiceLevel: string | null;
+  public insuranceAmountMinor: number | null;
   public metadata: JsonObject;
   public frozen: boolean;
   public frozenReason: string | null;
@@ -71,6 +82,7 @@ export class Cart {
   public paymentInitialized: boolean;
   public paymentAuthorizationUrl: string | null;
   public paymentInitializedAt: string | null;
+  public paymentReference: string | null;
 
   // -------------------------
   // Private/internal state
@@ -108,6 +120,9 @@ export class Cart {
     this.countryCode = props.countryCode || null;
     this.shippingAddress = props.shippingAddress || null;
     this.taxAmountMinor = props.taxAmountMinor ?? null;
+    this.shippingAmountMinor = props.shippingAmountMinor ?? null;
+    this.shippingServiceLevel = props.shippingServiceLevel ?? null;
+    this.insuranceAmountMinor = props.insuranceAmountMinor ?? null;
     this.metadata = props.metadata || {};
 
     // Lifecycle / state
@@ -123,6 +138,7 @@ export class Cart {
     this.paymentInitialized = props.paymentInitialized ?? false;
     this.paymentAuthorizationUrl = props.paymentAuthorizationUrl ?? null;
     this.paymentInitializedAt = props.paymentInitializedAt ?? null;
+    this.paymentReference = props.paymentReference ?? null;
 
     // Promotion and items
     this._appliedPromotion = props.appliedPromotion || null;
@@ -333,6 +349,7 @@ export class Cart {
   public markPaymentInitialized(metadata: {
     authorizationUrl?: string | null;
     initializedAt?: string;
+    paymentReference?: string | null;
   }): void {
     if (this.paymentInitialized) {
       throw new DomainError(
@@ -344,10 +361,12 @@ export class Cart {
     this.paymentInitialized = true;
     this.paymentStatus = "initialized";
     this.paymentAuthorizationUrl = metadata.authorizationUrl ?? null;
+    this.paymentReference = metadata.paymentReference ?? null;
     this.paymentInitializedAt =
       metadata.initializedAt ?? new Date().toISOString();
     this.setMetadata("paymentInitialization", {
       authorizationUrl: this.paymentAuthorizationUrl,
+      paymentReference: this.paymentReference,
       initializedAt: this.paymentInitializedAt,
     });
   }
@@ -421,6 +440,101 @@ export class Cart {
   }
 
   // -------------------------
+  // Authoritative money breakdown
+  // -------------------------
+
+  /**
+   * applySelectedShippingQuote
+   * - Persist a server-selected shipping quote amount and service level on the
+   *   cart. The amount is integer minor units; the service level is optional.
+   *   This is the ONLY writer of the durable shipping amount the checkout
+   *   total trusts — the client can never supply it directly.
+   */
+  public applySelectedShippingQuote(props: {
+    amountMinor: number;
+    serviceLevel?: string | null;
+  }): void {
+    if (!Number.isInteger(props.amountMinor) || props.amountMinor < 0) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Shipping amount must be a non-negative integer in minor units.",
+      );
+    }
+    this.shippingAmountMinor = props.amountMinor;
+    this.shippingServiceLevel = props.serviceLevel?.trim() || null;
+    this.touch();
+  }
+
+  /**
+   * recordInsuranceQuote
+   * - Persist a server-computed insurance premium on the cart (integer minor
+   *   units). The premium is produced by the insurance service from the cart
+   *   total, never supplied by the client.
+   */
+  public recordInsuranceQuote(premiumMinor: number): void {
+    if (!Number.isInteger(premiumMinor) || premiumMinor < 0) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Insurance premium must be a non-negative integer in minor units.",
+      );
+    }
+    this.insuranceAmountMinor = premiumMinor;
+    this.touch();
+  }
+
+  /**
+   * computeAuthoritativeCheckoutBreakdown
+   * - Compute the ONE authoritative server-side financial breakdown for this
+   *   cart: subtotal (Σ line totals) minus the applied promotion discount plus
+   *   server-persisted tax, shipping, and insurance. Every component comes from
+   *   server state (line prices set at add-time, Promotion config, persisted
+   *   quotes) — nothing is trusted from the client.
+   * - All arithmetic is integer minor units; no floating-point math.
+   */
+  public computeAuthoritativeCheckoutBreakdown(): PaymentAmountBreakdown {
+    const subtotalMinor = this.cartTotalMinor;
+    const discountMinor = this.appliedPromotion
+      ? this.appliedPromotion.computeDiscountAmount(subtotalMinor)
+      : 0;
+    const taxMinor = this.taxAmountMinor ?? 0;
+    const shippingMinor = this.shippingAmountMinor ?? 0;
+    const insuranceMinor = this.insuranceAmountMinor ?? 0;
+    const totalMinor =
+      subtotalMinor - discountMinor + taxMinor + shippingMinor + insuranceMinor;
+
+    return {
+      subtotalMinor,
+      discountMinor,
+      taxMinor,
+      shippingMinor,
+      insuranceMinor,
+      totalMinor,
+    };
+  }
+
+  /**
+   * snapshotChargedLineItems
+   * - Freeze the line items being charged (id, variantId, quantity,
+   *   unitPriceMinor, title) so the finalized order reflects EXACTLY what was
+   *   agreed at payment initialization, even if the cart mutates afterwards.
+   */
+  public snapshotChargedLineItems(): Array<{
+    id: string;
+    variantId: string | null;
+    quantity: number;
+    unitPriceMinor: number;
+    title: string | null;
+  }> {
+    return this.items.map((item) => ({
+      id: item.id,
+      variantId: item.variantId ?? null,
+      quantity: item.quantity,
+      unitPriceMinor: item.unitPriceMinor,
+      title: item.title ?? null,
+    }));
+  }
+
+  // -------------------------
   // Utilities
   // -------------------------
 
@@ -454,6 +568,9 @@ export class Cart {
       countryCode: this.countryCode,
       shippingAddress: this.shippingAddress,
       taxAmountMinor: this.taxAmountMinor,
+      shippingAmountMinor: this.shippingAmountMinor,
+      shippingServiceLevel: this.shippingServiceLevel,
+      insuranceAmountMinor: this.insuranceAmountMinor,
       metadata: this.metadata,
       frozen: this.frozen,
       frozenReason: this.frozenReason,
@@ -465,6 +582,7 @@ export class Cart {
       paymentInitialized: this.paymentInitialized,
       paymentAuthorizationUrl: this.paymentAuthorizationUrl,
       paymentInitializedAt: this.paymentInitializedAt,
+      paymentReference: this.paymentReference,
       items: this.items.map((item) => ({
         id: item.id,
         cartId: item.cartId,

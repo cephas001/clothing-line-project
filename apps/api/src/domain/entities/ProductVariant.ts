@@ -124,6 +124,32 @@ export class ProductVariant {
   }
 
   /**
+   * restockInventory
+   * - Adds returned/restocked quantity back to inventory.
+   * - Validates the request and enforces the inventory maximum.
+   * - Increments internal version for optimistic concurrency.
+   */
+  public restockInventory(quantity: number): void {
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Restock quantity must be a positive integer.",
+      );
+    }
+
+    const next = this._inventoryQuantity + quantity;
+    if (next > ProductVariant.MAX_INVENTORY) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Restock exceeds the allowed inventory maximum.",
+      );
+    }
+
+    this._inventoryQuantity = next;
+    this.incrementVersion();
+  }
+
+  /**
    * setAbsoluteInventory
    * - Set inventory to an absolute value after validation.
    * - Increments internal version for optimistic concurrency.

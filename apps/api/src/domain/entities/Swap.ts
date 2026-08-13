@@ -142,6 +142,22 @@ export class Swap {
     this._status = "canceled";
   }
 
+  /**
+   * Deterministic business identity of this swap request. Idempotency for swap
+   * creation keys on this value (persisted as UNIQUE `swap.natural_key`), NOT
+   * on the swap id (which is regenerated per invocation), so re-running the
+   * same swap request collides at the database instead of creating a duplicate
+   * swap and a second gateway payment/refund.
+   */
+  get naturalKey(): string {
+    return [
+      this.orderId,
+      this.returnLineItemId,
+      this.newVariantId,
+      this.returnQuantity,
+    ].join("|");
+  }
+
   get status(): SwapStatus {
     return this._status;
   }
