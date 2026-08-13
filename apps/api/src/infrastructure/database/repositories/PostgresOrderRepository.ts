@@ -23,6 +23,12 @@ type OrderRow = {
   cart_id: string;
   customer_id: string;
   total_minor: number;
+  currency: string | null;
+  subtotal_minor: number;
+  discount_minor: number;
+  tax_minor: number;
+  shipping_minor: number;
+  insurance_minor: number;
   fulfillment_status: Order["fulfillmentStatus"];
   payment_status: Order["paymentStatus"];
   transaction_reference: string | null;
@@ -87,6 +93,12 @@ function toDomain(
     cartId: row.cart_id,
     customerId: row.customer_id,
     totalAmountMinor: row.total_minor,
+    currency: row.currency,
+    subtotalMinor: row.subtotal_minor,
+    discountMinor: row.discount_minor,
+    taxMinor: row.tax_minor,
+    shippingMinor: row.shipping_minor,
+    insuranceMinor: row.insurance_minor,
     fulfillmentStatus: row.fulfillment_status,
     paymentStatus: row.payment_status,
     transactionReference: row.transaction_reference,
@@ -203,6 +215,12 @@ export class PostgresOrderRepository implements IOrderRepository {
           cart_id: order.cartId,
           customer_id: order.customerId,
           total_minor: order.totalAmountMinor,
+          currency: order.currency,
+          subtotal_minor: order.subtotalMinor,
+          discount_minor: order.discountMinor,
+          tax_minor: order.taxMinor,
+          shipping_minor: order.shippingMinor,
+          insurance_minor: order.insuranceMinor,
           fulfillment_status: order.fulfillmentStatus,
           payment_status: order.paymentStatus,
           transaction_reference: order.transactionReference,
@@ -223,6 +241,12 @@ export class PostgresOrderRepository implements IOrderRepository {
             cart_id: order.cartId,
             customer_id: order.customerId,
             total_minor: order.totalAmountMinor,
+            currency: order.currency,
+            subtotal_minor: order.subtotalMinor,
+            discount_minor: order.discountMinor,
+            tax_minor: order.taxMinor,
+            shipping_minor: order.shippingMinor,
+            insurance_minor: order.insuranceMinor,
             fulfillment_status: order.fulfillmentStatus,
             payment_status: order.paymentStatus,
             transaction_reference: order.transactionReference,

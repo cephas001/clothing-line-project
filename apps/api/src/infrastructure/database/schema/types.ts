@@ -26,6 +26,8 @@ import {
   PromotionSnapshot,
 } from "@api/domain/shared/contracts";
 import { FulfillmentStatus, PaymentStatus } from "@api/domain/entities/Order";
+import { PaymentObligationType, PaymentState } from "@api/domain/entities/Payment";
+import { RefundStatus } from "@api/domain/entities/Refund";
 import { OrderEditChange } from "@api/domain/entities/OrderEdit";
 import { PromotionDiscountType } from "@api/domain/entities/Promotion";
 import { QuoteStatus } from "@api/domain/entities/Quote";
@@ -188,6 +190,15 @@ export interface Database {
      */
     discount: JsonB<CartPromotionSnapshot> | null;
     tax_amount_minor: number | null;
+    /**
+     * Server-persisted selected shipping amount in minor units; the checkout
+     * total trusts ONLY this durable value (never a client-supplied amount).
+     */
+    shipping_amount_minor: number | null;
+    /** Server-persisted selected shipping service level. */
+    shipping_service_level: string | null;
+    /** Server-persisted insurance premium in minor units; null when not opted in. */
+    insurance_amount_minor: number | null;
     metadata: JsonB;
     frozen: boolean;
     frozen_reason: string | null;
@@ -199,6 +210,12 @@ export interface Database {
     payment_initialized: boolean;
     payment_authorization_url: string | null;
     payment_initialized_at: string | null;
+    /**
+     * Durable, app-generated payment reference supplied to the gateway at
+     * initialization. Mirrors the authoritative `payment` row (obligation
+     * checkout/cartId) so the checkout aggregate carries its own reference.
+     */
+    payment_reference: string | null;
     created_at: Generated<string>;
     /** Last-mutation timestamp; drives abandoned-cart pruning. */
     updated_at: Generated<string>;
@@ -227,6 +244,18 @@ export interface Database {
     cart_id: string;
     customer_id: string;
     total_minor: number;
+    /** ISO-4217 currency code (lowercase) of the captured charge. */
+    currency: string | null;
+    /** Frozen subtotal (Σ line totals) at order time, minor units. */
+    subtotal_minor: number;
+    /** Frozen promotion discount at order time, minor units. */
+    discount_minor: number;
+    /** Frozen regional tax at order time, minor units. */
+    tax_minor: number;
+    /** Frozen shipping amount at order time, minor units. */
+    shipping_minor: number;
+    /** Frozen insurance premium at order time, minor units. */
+    insurance_minor: number;
     fulfillment_status: FulfillmentStatus;
     payment_status: PaymentStatus;
     transaction_reference: string | null;
@@ -263,6 +292,65 @@ export interface Database {
     amount_minor: number;
     reference: string;
     created_at: Generated<string>;
+  };
+
+  /**
+   * domain/entities/Payment — durable payment obligation. One row per
+   * obligation (checkout cart, swap, order edit), an app-generated
+   * `reference` (unique) that is passed to the gateway up front, and the
+   * provider-returned reference (unique when present). The database UNIQUE
+   * constraints are the final concurrency guard for payment idempotency.
+   */
+  payment: {
+    id: string;
+    obligation_type: PaymentObligationType;
+    obligation_id: string;
+    /** App-generated idempotency reference; unique. Passed to the gateway. */
+    reference: string;
+    /** Provider (Paystack) transaction reference; unique when present. */
+    provider_reference: string | null;
+    provider_payment_url: string | null;
+    amount_minor: number;
+    /** ISO-4217 currency (lowercase); authoritative for checkout obligations. */
+    currency: string | null;
+    /** Server-computed subtotal (Σ line totals) at obligation time. */
+    subtotal_minor: number;
+    /** Server-computed promotion discount at obligation time. */
+    discount_minor: number;
+    /** Server-computed regional tax at obligation time. */
+    tax_minor: number;
+    /** Selected shipping amount at obligation time. */
+    shipping_minor: number;
+    /** Embedded insurance premium at obligation time. */
+    insurance_minor: number;
+    status: PaymentState;
+    metadata: JsonB;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+  };
+
+  /**
+   * domain/entities/Refund — durable, idempotent refund. Identified by
+   * (provider_transaction_reference, amount_minor) so a refund can never be
+   * issued twice, plus app-generated and provider refund references.
+   */
+  refund: {
+    id: string;
+    /** Optional link to the original payment intent (NULL for legacy rows). */
+    payment_id: string | null;
+    /** App-generated idempotency reference; unique. */
+    refund_reference: string;
+    /** Provider (Paystack) refund reference; unique when present. */
+    provider_refund_reference: string | null;
+    /** The provider transaction this refund targets. */
+    provider_transaction_reference: string;
+    amount_minor: number;
+    currency: string | null;
+    status: RefundStatus;
+    reason: string | null;
+    metadata: JsonB;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
   };
 
   /** domain/entities/OrderEdit */
@@ -342,6 +430,12 @@ export interface Database {
     created_by: string;
     payment_reference: string | null;
     payment_url: string | null;
+    /**
+     * Deterministic business identity of the swap request (order + line item +
+     * target variant + quantity). UNIQUE so re-running the same swap request
+     * collides instead of creating a duplicate swap/payment/refund.
+     */
+    natural_key: string | null;
   };
 
   // ---------------------------------------------------------------------------

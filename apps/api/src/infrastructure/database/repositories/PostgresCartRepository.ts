@@ -27,6 +27,9 @@ type CartRow = {
   shipping_address: unknown;
   discount: unknown;
   tax_amount_minor: number | null;
+  shipping_amount_minor: number | null;
+  shipping_service_level: string | null;
+  insurance_amount_minor: number | null;
   metadata: unknown;
   frozen: boolean;
   frozen_reason: string | null;
@@ -38,6 +41,7 @@ type CartRow = {
   payment_initialized: boolean;
   payment_authorization_url: string | null;
   payment_initialized_at: string | null;
+  payment_reference: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -125,6 +129,9 @@ function toDomain(row: CartRow, lineItemRows: CartLineItemRow[]): Cart {
     countryCode: row.country_code,
     shippingAddress,
     taxAmountMinor: row.tax_amount_minor,
+    shippingAmountMinor: row.shipping_amount_minor,
+    shippingServiceLevel: row.shipping_service_level,
+    insuranceAmountMinor: row.insurance_amount_minor,
     metadata:
       row.metadata && typeof row.metadata === "object"
         ? (row.metadata as Record<string, unknown>)
@@ -139,6 +146,7 @@ function toDomain(row: CartRow, lineItemRows: CartLineItemRow[]): Cart {
     paymentInitialized: row.payment_initialized,
     paymentAuthorizationUrl: row.payment_authorization_url,
     paymentInitializedAt: row.payment_initialized_at,
+    paymentReference: row.payment_reference,
   });
 }
 
@@ -189,6 +197,9 @@ export class PostgresCartRepository implements ICartRepository {
             : null,
           discount: toPromotionSnapshotJson(cart),
           tax_amount_minor: cart.taxAmountMinor,
+          shipping_amount_minor: cart.shippingAmountMinor,
+          shipping_service_level: cart.shippingServiceLevel,
+          insurance_amount_minor: cart.insuranceAmountMinor,
           metadata: JSON.stringify(cart.metadata),
           frozen: cart.frozen,
           frozen_reason: cart.frozenReason,
@@ -200,6 +211,7 @@ export class PostgresCartRepository implements ICartRepository {
           payment_initialized: cart.paymentInitialized,
           payment_authorization_url: cart.paymentAuthorizationUrl,
           payment_initialized_at: cart.paymentInitializedAt,
+          payment_reference: cart.paymentReference,
           created_at: cart.createdAt,
           updated_at: cart.updatedAt,
         })
@@ -215,6 +227,9 @@ export class PostgresCartRepository implements ICartRepository {
               : null,
             discount: toPromotionSnapshotJson(cart),
             tax_amount_minor: cart.taxAmountMinor,
+            shipping_amount_minor: cart.shippingAmountMinor,
+            shipping_service_level: cart.shippingServiceLevel,
+            insurance_amount_minor: cart.insuranceAmountMinor,
             metadata: JSON.stringify(cart.metadata),
             frozen: cart.frozen,
             frozen_reason: cart.frozenReason,
@@ -226,6 +241,7 @@ export class PostgresCartRepository implements ICartRepository {
             payment_initialized: cart.paymentInitialized,
             payment_authorization_url: cart.paymentAuthorizationUrl,
             payment_initialized_at: cart.paymentInitializedAt,
+            payment_reference: cart.paymentReference,
             updated_at: cart.updatedAt,
           }),
         )
