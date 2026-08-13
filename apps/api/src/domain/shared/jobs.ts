@@ -20,9 +20,16 @@ export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
  * publishes to and consumes from.
  *
  * These contracts mirror what the producers actually enqueue:
- * - `QueuePaymentEventUseCase` enqueues the gateway `parsedPayload` to
- *   `payment-events-queue`; its required fields match the
- *   `WebhookPaymentFinalizeRequest` schema.
+ * - `QueuePaymentEventUseCase` enqueues a typed `PaymentEventJobPayload` to
+ *   `payment-events-queue`. The payload is a discriminated union keyed on
+ *   `obligationType`:
+ *     * `checkout` (`CheckoutPaymentEventJobPayload`) — fields `cartId`,
+ *       `transactionReference`, `amountPaidMinor`, `currency`,
+ *       `expectedAmountMinor`, `reportedCurrency`, produced by the provider
+ *       webhook mapper for a settled checkout cart obligation.
+ *     * `swap` (`SwapPaymentEventJobPayload`) — fields `swapId`, `orderId`,
+ *       and the same payment fields, produced for a settled swap-upcharge
+ *       obligation. The raw provider envelope is never queued.
  * - `ImportBulkCatalogDataUseCase` enqueues the bulk-import metadata to
  *   `bulk-import-queue`.
  *
@@ -31,11 +38,60 @@ export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
  * (retrying cannot fix it), so the parsers reject it with a `VALIDATION_ERROR`
  * DomainError before any use case is invoked.
  */
-export interface PaymentEventJobPayload {
+export type PaymentObligationType = "checkout" | "swap";
+
+export type CheckoutPaymentEventJobPayload = {
+  obligationType: "checkout";
   cartId: string;
   transactionReference: string;
+  /** Amount actually captured by the provider, in integer minor units. */
   amountPaidMinor: number;
-}
+  /**
+   * ISO-4217 currency code (lowercase) of the charge. Populated from the
+   * DURABLE payment obligation when one resolves; null for legacy webhooks.
+   * The finalizer rejects a provider currency that disagrees with the
+   * obligation.
+   */
+  currency: string | null;
+  /**
+   * The authoritative amount the obligation expected (the durable payment's
+   * `amountMinor`). The finalizer requires the captured amount to equal this.
+   * Null for legacy webhooks without a durable obligation (best-effort only).
+   */
+  expectedAmountMinor: number | null;
+  /**
+   * ISO-4217 currency code (lowercase) AS REPORTED BY THE PROVIDER WEBHOOK
+   * (`data.currency`), distinct from `currency` (the obligation's authoritative
+   * currency). The worker's financial verification compares this against the
+   * durable obligation; a valid signature is not sufficient. Null when the
+   * webhook carried no currency (or the event predates this field).
+   */
+  reportedCurrency: string | null;
+};
+
+export type SwapPaymentEventJobPayload = {
+  obligationType: "swap";
+  /**
+   * The swap obligation's identity (`payment.obligationId`), derived from local
+   * authoritative state — never provider-echoed metadata. The worker verifies
+   * it resolves to the correct `swap.id`.
+   */
+  swapId: string;
+  /**
+   * The order the swap modifies (`swap.orderId`), derived from the durable
+   * obligation's metadata. The worker cross-checks it against the swap row.
+   */
+  orderId: string;
+  transactionReference: string;
+  amountPaidMinor: number;
+  currency: string | null;
+  expectedAmountMinor: number | null;
+  reportedCurrency: string | null;
+};
+
+export type PaymentEventJobPayload =
+  | CheckoutPaymentEventJobPayload
+  | SwapPaymentEventJobPayload;
 
 export interface BulkCatalogImportJobPayload {
   jobId: string;
@@ -61,7 +117,10 @@ function requiredString(value: unknown, field: string): string {
 
 /**
  * Validate an opaque job payload against the `PaymentEventJobPayload` contract.
- * Extra gateway fields beyond the required ones are tolerated and ignored.
+ * The payload is discriminated on `obligationType` ("swap" vs "checkout").
+ * `obligationType` is required for new producers; a payload without it is
+ * treated as a legacy checkout event (pre-discrimination producers). Extra
+ * gateway fields beyond the required ones are tolerated and ignored.
  */
 export function parsePaymentEventJobPayload(
   value: unknown,
@@ -73,7 +132,6 @@ export function parsePaymentEventJobPayload(
     );
   }
 
-  const cartId = requiredString(value.cartId, "cartId");
   const transactionReference = requiredString(
     value.transactionReference,
     "transactionReference",
@@ -91,7 +149,85 @@ export function parsePaymentEventJobPayload(
     );
   }
 
-  return { cartId, transactionReference, amountPaidMinor };
+  // `currency` is optional at the wire level: null when the webhook carried no
+  // currency or no durable obligation resolved. When present it must be a
+  // non-empty ISO-4217 string.
+  let currency: string | null = null;
+  if (value.currency !== null && value.currency !== undefined) {
+    if (typeof value.currency !== "string" || value.currency.trim() === "") {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Job payload field 'currency' must be a non-empty string or null.",
+      );
+    }
+    currency = value.currency.trim();
+  }
+
+  // `expectedAmountMinor` is optional at the wire level: null for legacy
+  // webhooks with no durable obligation. When present it must be a
+  // non-negative integer.
+  let expectedAmountMinor: number | null = null;
+  if (
+    value.expectedAmountMinor !== null &&
+    value.expectedAmountMinor !== undefined
+  ) {
+    if (
+      typeof value.expectedAmountMinor !== "number" ||
+      !Number.isInteger(value.expectedAmountMinor) ||
+      value.expectedAmountMinor < 0
+    ) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Job payload field 'expectedAmountMinor' must be a non-negative integer or null.",
+      );
+    }
+    expectedAmountMinor = value.expectedAmountMinor;
+  }
+
+  // `reportedCurrency` is optional at the wire level (legacy jobs carry no such
+  // field): null when the provider webhook reported no currency. When present
+  // it must be a non-empty ISO-4217 string.
+  let reportedCurrency: string | null = null;
+  if (value.reportedCurrency !== null && value.reportedCurrency !== undefined) {
+    if (
+      typeof value.reportedCurrency !== "string" ||
+      value.reportedCurrency.trim() === ""
+    ) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "Job payload field 'reportedCurrency' must be a non-empty string or null.",
+      );
+    }
+    reportedCurrency = value.reportedCurrency.trim();
+  }
+
+  // Discriminate on obligationType. A payload without it is a legacy checkout
+  // event (pre-discrimination producers emitted only checkout payloads).
+  if (value.obligationType === "swap") {
+    const swapId = requiredString(value.swapId, "swapId");
+    const orderId = requiredString(value.orderId, "orderId");
+    return {
+      obligationType: "swap",
+      swapId,
+      orderId,
+      transactionReference,
+      amountPaidMinor,
+      currency,
+      expectedAmountMinor,
+      reportedCurrency,
+    };
+  }
+
+  const cartId = requiredString(value.cartId, "cartId");
+  return {
+    obligationType: "checkout",
+    cartId,
+    transactionReference,
+    amountPaidMinor,
+    currency,
+    expectedAmountMinor,
+    reportedCurrency,
+  };
 }
 
 /**
