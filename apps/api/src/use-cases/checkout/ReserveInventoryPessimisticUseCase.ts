@@ -72,7 +72,7 @@ export class ReserveInventoryPessimisticUseCase {
     }
     // --- Reserve inventory within a transactional unit of work
     try {
-      await this.transactionManager.execute(async () => {
+      const reservation = await this.transactionManager.execute(async () => {
         // Acquire a row-level lock within the current transaction
         let variant: ProductVariant | null;
         try {
@@ -153,36 +153,39 @@ export class ReserveInventoryPessimisticUseCase {
         // Persist within the same transactional boundary
         await this.variantRepository.save(variant);
 
-        // --- Audit log (non-blocking)
-        try {
-          await this.auditLogService.logAction(
-            actorId,
-            "INVENTORY_RESERVED",
-            {
-              auditId: this.idGenerator.generate(),
-              variantId,
-              requestedQuantity: String(requestedQuantity),
-              remainingQuantity: String(
-                variant.inventoryQuantity ?? available - requestedQuantity,
-              ),
-              reservedAt: new Date().toISOString(),
-            },
-          );
-        } catch (auditErr: unknown) {
-          this.logger.warn("Audit log failed for inventory reservation", {
-            err: auditErr,
-            variantId,
-            actorId,
-          });
-        }
-
         this.logger.info("Inventory reserved (pessimistic)", {
           variantId,
           requestedQuantity,
           remainingQuantity: variant.inventoryQuantity,
           actorId,
         });
+
+        return { variant, available };
       });
+
+      // --- Audit log (post-commit, best-effort)
+      try {
+        await this.auditLogService.logAction(
+          actorId,
+          "INVENTORY_RESERVED",
+          {
+            auditId: this.idGenerator.generate(),
+            variantId,
+            requestedQuantity: String(requestedQuantity),
+            remainingQuantity: String(
+              reservation.variant.inventoryQuantity ??
+                reservation.available - requestedQuantity,
+            ),
+            reservedAt: new Date().toISOString(),
+          },
+        );
+      } catch (auditErr: unknown) {
+        this.logger.warn("Audit log failed for inventory reservation", {
+          err: auditErr,
+          variantId,
+          actorId,
+        });
+      }
     } catch (err: unknown) {
       // If we threw a DomainError above (e.g., OUT_OF_STOCK, LOCK_ACQUISITION_FAILED), rethrow it
       if (err instanceof DomainError) {
