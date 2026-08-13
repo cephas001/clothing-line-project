@@ -140,3 +140,32 @@ export interface CartPromotionSnapshot {
   minimumSpendMinor: number;
   isActive: boolean;
 }
+
+/**
+ * Authoritative, server-computed financial breakdown of a checkout charge.
+ *
+ * Every amount is an integer in minor units (Kobo/cents); NO floating-point
+ * math is ever performed. The cart computes ONE authoritative breakdown
+ * (`Cart.computeAuthoritativeCheckoutBreakdown`) which becomes the durable
+ * payment obligation, the exact amount sent to the gateway, the expected amount
+ * the webhook must match, and the frozen financial snapshot of the order.
+ *
+ * The invariant `totalMinor === subtotalMinor - discountMinor + taxMinor +
+ * shippingMinor + insuranceMinor` is validated when the breakdown is persisted
+ * (Payment entity) so a mis-priced charge is rejected before it reaches the
+ * gateway.
+ */
+export interface PaymentAmountBreakdown {
+  /** Σ line totals (unitPriceMinor × quantity) — server-priced line items. */
+  subtotalMinor: number;
+  /** Server-computed promotion discount, never trusted from the client. */
+  discountMinor: number;
+  /** Server-computed regional tax (Cart.taxAmountMinor); 0 when none. */
+  taxMinor: number;
+  /** Selected shipping quote amount; 0 when none selected. */
+  shippingMinor: number;
+  /** Embedded insurance premium; 0 when not opted in. */
+  insuranceMinor: number;
+  /** The single authoritative charge amount = the sum of the parts above. */
+  totalMinor: number;
+}

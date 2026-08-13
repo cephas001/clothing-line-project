@@ -49,6 +49,13 @@ export type ErrorCode =
 
   // Payments
   | "PAYMENT_DECLINED"
+  /**
+   * A refund was claimed but its dispatch could not be confirmed (e.g. a crash
+   * between the gateway call and the dispatch record, or a gateway rejection).
+   * The outcome is ambiguous and MUST NOT be auto-retried; manual/operator
+   * reconciliation is required before the refund can be re-issued.
+   */
+  | "REFUND_REQUIRES_REVIEW"
 
   // Security
   | "INVALID_SIGNATURE"
