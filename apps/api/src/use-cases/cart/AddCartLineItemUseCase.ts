@@ -196,6 +196,17 @@ export class AddCartLineItemUseCase {
         );
       }
 
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        this.logger.warn("Cart was concurrently modified; retry the request", {
+          err,
+          cartId: cart.id,
+        });
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
+
       // Unknown repository error: log and wrap
       this.logger.error("Failed to persist cart after adding line item", {
         err,

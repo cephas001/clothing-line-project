@@ -50,6 +50,7 @@ import { DomainError } from "@api/domain/entities/errors/DomainError";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import type { ITokenService } from "@api/domain/interfaces/services/ITokenService";
 import type { ProcessOrderSwapVarianceUseCase } from "@api/use-cases/logistics/ProcessOrderSwapVarianceUseCase";
+import { resolveActorFromBearerToken } from "./auth";
 
 const SWAP_BODY_LIMIT = "100kb";
 const ALLOWED_BODY_KEYS = [
@@ -216,47 +217,11 @@ function parseSwapRequestBody(body: unknown): {
 
 /**
  * Resolve the authenticated actor from the `Authorization: Bearer <jwt>` header.
- * Returns undefined when no header is presented. Throws UNAUTHORIZED_ACCESS for
- * a present-but-invalid header or token. A customerId is never read from the
+ * Shared with the other storefront routers (see ./auth). Returns undefined when
+ * no header is presented. Throws UNAUTHORIZED_ACCESS for a
+ * present-but-invalid header or token. A customerId is never read from the
  * request body.
  */
-async function resolveActorFromBearerToken(
-  req: Request,
-  tokenService: ITokenService,
-): Promise<string | undefined> {
-  const authHeader = (req.get("authorization") ?? "").trim();
-  if (!authHeader) {
-    return undefined;
-  }
-  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-  const token = match?.[1]?.trim() ?? "";
-  if (!match || !token) {
-    throw new DomainError(
-      "UNAUTHORIZED_ACCESS",
-      "Authorization header must use the 'Bearer <token>' scheme.",
-    );
-  }
-  try {
-    const claims = await tokenService.verifyToken(token);
-    const customerId =
-      typeof claims.customerId === "string" ? claims.customerId.trim() : "";
-    if (!customerId) {
-      throw new DomainError(
-        "UNAUTHORIZED_ACCESS",
-        "Authentication token carries no customer identity.",
-      );
-    }
-    return customerId;
-  } catch (err: unknown) {
-    if (err instanceof DomainError) {
-      throw err;
-    }
-    throw new DomainError(
-      "UNAUTHORIZED_ACCESS",
-      "Invalid or expired authentication token.",
-    );
-  }
-}
 
 /**
  * Map a thrown error to the standard error envelope. External infrastructure

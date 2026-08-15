@@ -34,8 +34,10 @@
 //   401  UNAUTHORIZED_ACCESS (invalid, expired, or malformed bearer token)
 //   403  PERMISSION_DENIED (authenticated customer does not own the cart)
 //   404  CART_NOT_FOUND / REGION_NOT_FOUND
-//   409  INVALID_OPERATION (empty/fully discounted cart, already initialized,
-//        already paid, already converted, settled obligation, missing email)
+//   409  INVALID_OPERATION / INVALID_STATE (empty/fully discounted cart, no
+//        shipping selected, stale/inconsistent shipping quote, shipping currency
+//        mismatch, already initialized, already paid, already converted,
+//        settled obligation, missing email)
 //   500  EXTERNAL_SERVICE_* / INTERNAL_ERROR (application-level; the durable
 //        obligation stays intact for idempotent retry)
 //
@@ -48,6 +50,7 @@ import { DomainError } from "@api/domain/entities/errors/DomainError";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import type { ITokenService } from "@api/domain/interfaces/services/ITokenService";
 import type { InitializePaymentSessionUseCase } from "@api/use-cases/checkout/InitializePaymentSessionUseCase";
+import { resolveActorFromBearerToken } from "./auth";
 
 const INIT_BODY_LIMIT = "100kb";
 const ALLOWED_BODY_KEYS = ["returnUrl"] as const;
@@ -161,47 +164,11 @@ function parseInitRequestBody(body: unknown): string | undefined {
 
 /**
  * Resolve the authenticated actor from the `Authorization: Bearer <jwt>` header.
- * Returns undefined for guest checkout (no header). Throws UNAUTHORIZED_ACCESS
- * for a present-but-invalid header or token. A customerId is never read from
- * the request body.
+ * Shared with the other storefront routers (see ./auth). Returns undefined for
+ * guest checkout (no header). Throws UNAUTHORIZED_ACCESS for a
+ * present-but-invalid header or token. A customerId is never read from the
+ * request body.
  */
-async function resolveActorFromBearerToken(
-  req: Request,
-  tokenService: ITokenService,
-): Promise<string | undefined> {
-  const authHeader = (req.get("authorization") ?? "").trim();
-  if (!authHeader) {
-    return undefined;
-  }
-  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-  const token = match?.[1]?.trim() ?? "";
-  if (!match || !token) {
-    throw new DomainError(
-      "UNAUTHORIZED_ACCESS",
-      "Authorization header must use the 'Bearer <token>' scheme.",
-    );
-  }
-  try {
-    const claims = await tokenService.verifyToken(token);
-    const customerId =
-      typeof claims.customerId === "string" ? claims.customerId.trim() : "";
-    if (!customerId) {
-      throw new DomainError(
-        "UNAUTHORIZED_ACCESS",
-        "Authentication token carries no customer identity.",
-      );
-    }
-    return customerId;
-  } catch (err: unknown) {
-    if (err instanceof DomainError) {
-      throw err;
-    }
-    throw new DomainError(
-      "UNAUTHORIZED_ACCESS",
-      "Invalid or expired authentication token.",
-    );
-  }
-}
 
 /**
  * Map a thrown error to the standard error envelope. External infrastructure
@@ -228,8 +195,10 @@ function mapPaymentInitializationError(err: unknown): {
       case "REGION_NOT_FOUND":
         return { status: 404, code: err.code, message: err.message };
       case "INVALID_OPERATION":
+      case "INVALID_STATE":
         // Conflict: already initialized / already paid / already converted /
-        // settled obligation / empty cart. The client should not blindly retry.
+        // settled obligation / empty cart / shipping not selected, stale, or
+        // inconsistent. The client should not blindly retry.
         return { status: 409, code: err.code, message: err.message };
       case "EXTERNAL_SERVICE_TIMEOUT":
       case "EXTERNAL_SERVICE_UNAVAILABLE":

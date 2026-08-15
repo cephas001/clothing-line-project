@@ -17,7 +17,9 @@ import { ProcessFraudAlertEventUseCase } from "@api/use-cases/checkout/ProcessFr
 import { QueuePaymentEventUseCase } from "@api/use-cases/checkout/QueuePaymentEventUseCase";
 import { ReconcileOrphanedLocksUseCase } from "@api/use-cases/checkout/ReconcileOrphanedLocksUseCase";
 import { ReserveInventoryPessimisticUseCase } from "@api/use-cases/checkout/ReserveInventoryPessimisticUseCase";
+import { ResetFailedPaymentInitializationUseCase } from "@api/use-cases/checkout/ResetFailedPaymentInitializationUseCase";
 import { RetrieveDynamicShippingQuotesUseCase } from "@api/use-cases/checkout/RetrieveDynamicShippingQuotesUseCase";
+import { SelectShippingOptionUseCase } from "@api/use-cases/checkout/SelectShippingOptionUseCase";
 import { SetCheckoutShippingAddressUseCase } from "@api/use-cases/checkout/SetCheckoutShippingAddressUseCase";
 import { VerifyPaymentEventSignatureUseCase } from "@api/use-cases/checkout/VerifyPaymentEventSignatureUseCase";
 import { VerifyPaymentEventUseCase } from "@api/use-cases/checkout/VerifyPaymentEventUseCase";
@@ -33,7 +35,9 @@ export interface CheckoutUseCases {
   queuePaymentEvent: QueuePaymentEventUseCase;
   reconcileOrphanedLocks?: ReconcileOrphanedLocksUseCase;
   reserveInventoryPessimistic: ReserveInventoryPessimisticUseCase;
+  resetFailedPaymentInitialization: ResetFailedPaymentInitializationUseCase;
   retrieveDynamicShippingQuotes?: RetrieveDynamicShippingQuotesUseCase;
+  selectShippingOption: SelectShippingOptionUseCase;
   setCheckoutShippingAddress?: SetCheckoutShippingAddressUseCase;
   verifyPaymentEvent: VerifyPaymentEventUseCase;
   verifyPaymentEventSignature: VerifyPaymentEventSignatureUseCase;
@@ -147,6 +151,7 @@ export function buildCheckoutUseCases(
   if (logisticsService) {
     processFraudAlertEvent = new ProcessFraudAlertEventUseCase(
       deps.orderRepository,
+      deps.fulfillmentRepository,
       logisticsService,
       auditLogService,
       idGenerator,
@@ -187,6 +192,7 @@ export function buildCheckoutUseCases(
       auditLogService,
       idGenerator,
       logger,
+      transactionManager,
     );
   } else {
     report.unwiredUseCase(
@@ -194,6 +200,33 @@ export function buildCheckoutUseCases(
       "ILogisticsService",
     );
   }
+
+  // The selection operation depends only on core dependencies (the quote list
+  // it resolves against is persisted on the cart by
+  // RetrieveDynamicShippingQuotesUseCase), so it is always wired. It refuses to
+  // apply a quote that is not in the server-persisted list, and refuses any
+  // mutation once a durable payment obligation exists for the cart (the
+  // obligation freezes the authoritative amount + shipping snapshot).
+  const selectShippingOption = new SelectShippingOptionUseCase(
+    deps.cartRepository,
+    deps.paymentRepository,
+    auditLogService,
+    idGenerator,
+    logger,
+    transactionManager,
+  );
+
+  // Releases the shipping/payment mutation lock after a failed/abandoned
+  // payment attempt. Depends only on core dependencies, so it is always wired.
+  const resetFailedPaymentInitialization =
+    new ResetFailedPaymentInitializationUseCase(
+      deps.cartRepository,
+      deps.paymentRepository,
+      auditLogService,
+      idGenerator,
+      logger,
+      transactionManager,
+    );
 
   const taxService = deps.externalServices?.taxCalculationService;
   let setCheckoutShippingAddress: SetCheckoutShippingAddressUseCase | undefined;
@@ -218,6 +251,8 @@ export function buildCheckoutUseCases(
     "ProcessDeadLetterQueueUseCase",
     "QueuePaymentEventUseCase",
     "ReserveInventoryPessimisticUseCase",
+    "ResetFailedPaymentInitializationUseCase",
+    "SelectShippingOptionUseCase",
     "VerifyPaymentEventSignatureUseCase",
     "VerifyPaymentEventUseCase",
   );
@@ -232,7 +267,9 @@ export function buildCheckoutUseCases(
     queuePaymentEvent,
     reconcileOrphanedLocks,
     reserveInventoryPessimistic,
+    resetFailedPaymentInitialization,
     retrieveDynamicShippingQuotes,
+    selectShippingOption,
     setCheckoutShippingAddress,
     verifyPaymentEvent,
     verifyPaymentEventSignature,

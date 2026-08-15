@@ -36,9 +36,13 @@ import { buildUseCases, UseCaseComposition } from "./useCases";
 import type { ExternalServiceDependencies } from "./useCases/types";
 import { PaystackPaymentService } from "../services/PaystackPaymentService";
 import { PaystackWebhookPayloadMapper } from "../services/PaystackWebhookPayloadMapper";
+import { ShipbubbleLogisticsService } from "../services/ShipbubbleLogisticsService";
+import { ShipbubbleWebhookPayloadMapper } from "../services/ShipbubbleWebhookPayloadMapper";
 import { createPaymentWebhookRouter } from "../../adapters/http/PaymentWebhookRouter";
+import { createShipbubbleWebhookRouter } from "../../adapters/http/ShipbubbleWebhookRouter";
 import { createPaymentInitializationRouter } from "../../adapters/http/PaymentInitializationRouter";
 import { createSwapRouter } from "../../adapters/http/SwapRouter";
+import { createCheckoutShippingRouter } from "../../adapters/http/CheckoutShippingRouter";
 import type { Router } from "express";
 
 export interface BootstrapOptions {
@@ -75,6 +79,22 @@ export interface ApplicationRuntime {
    */
   swapRouter?: Router;
   /**
+   * Checkout-shipping HTTP router (POST /store/carts/:id/shipping-quotes and
+   * POST /store/carts/:id/shipping-options). Always present (selection depends
+   * only on core dependencies); the shipping-quotes route is registered only
+   * when a logistics service is configured. Pure transport boundary — the use
+   * cases own all quote/selection/pricing logic.
+   */
+  checkoutShippingRouter?: Router;
+  /**
+   * Shipbubble logistics webhook HTTP router, present only when
+   * SHIPBUBBLE_WEBHOOK_SECRET is configured. The API server mounts it at
+   * /store/webhooks/shipbubble. Pure transport boundary: verify signature ->
+   * map provider event -> enqueue. Never mutates fulfillment, never creates
+   * shipments, never calls Shipbubble, and never opens a DB transaction.
+   */
+  logisticsWebhookRouter?: Router;
+  /**
    * Graceful shutdown: close the queue connections, the Postgres pool, and the
    * session-revocation Redis client. Background workers are not owned by this
    * runtime (see apps/worker). Idempotent.
@@ -106,6 +126,32 @@ export function bootstrapApplication(
       baseUrl: config.paystackBaseUrl,
       timeoutMs: config.paystackTimeoutMs,
       logger,
+    });
+  }
+
+  // --- Logistics adapter (Shipbubble) when the API key is present -------------
+  // Constructed only when the credential is present; fails fast when the
+  // provider-required sender address or package category is missing, so an
+  // incomplete logistics configuration can never start with a half-built
+  // adapter. ShipbubbleLogisticsService is infrastructure-only (never queries
+  // repositories); it stays out of the worker runtime, which passes no
+  // externalServices and never needs ILogisticsService. An explicit
+  // `externalServices.logisticsService` override wins over the default.
+  if (!externalServices.logisticsService && config.shipbubbleApiKey) {
+    if (!config.shipbubbleSenderAddress || !config.shipbubblePackageCategoryId) {
+      throw new Error(
+        "SHIPBUBBLE_API_KEY is set but SHIPBUBBLE_SENDER_ADDRESS / SHIPBUBBLE_PACKAGE_CATEGORY_ID are not; the Shipbubble adapter cannot be constructed.",
+      );
+    }
+    externalServices.logisticsService = new ShipbubbleLogisticsService({
+      apiKey: config.shipbubbleApiKey,
+      baseUrl: config.shipbubbleBaseUrl,
+      timeoutMs: config.shipbubbleTimeoutMs,
+      logger,
+      senderAddress: config.shipbubbleSenderAddress,
+      packageCategoryId: config.shipbubblePackageCategoryId,
+      defaultItemWeightKg: config.shipbubbleDefaultItemWeightKg,
+      defaultPackageDimensions: config.shipbubbleDefaultPackageDimensions,
     });
   }
 
@@ -150,6 +196,26 @@ export function bootstrapApplication(
     });
   }
 
+  // --- Shipbubble logistics webhook HTTP adapter (L5) --------------------------
+  // Mounted ONLY when the dedicated SHIPBUBBLE_WEBHOOK_SECRET is present. The
+  // secret is DISTINCT from SHIPBUBBLE_API_KEY — the API key is never used for
+  // signature verification. When absent the endpoint is not mounted (requests
+  // receive a 404); it is never faked or silently weakened. The mapper is a
+  // pure provider-boundary transformation (no repositories), and the router
+  // only verifies -> maps -> enqueues; it never touches PostgreSQL or BullMQ
+  // inside a transaction.
+  const shipbubbleWebhookMapper = new ShipbubbleWebhookPayloadMapper();
+  let logisticsWebhookRouter: Router | undefined;
+  if (config.shipbubbleWebhookSecret) {
+    logisticsWebhookRouter = createShipbubbleWebhookRouter({
+      verifySignature: useCases.useCases.logistics.verifyLogisticsEventSignature,
+      queueLogisticsEvent: useCases.useCases.logistics.queueLogisticsEvent,
+      mapper: shipbubbleWebhookMapper,
+      webhookSecret: config.shipbubbleWebhookSecret,
+      logger,
+    });
+  }
+
   // --- Payment-initialization HTTP adapter (Phase 1/2) -------------------------
   // Mounted ONLY when InitializePaymentSessionUseCase is wired (i.e. a payment
   // service is configured). Pure transport boundary: it maps the request into
@@ -186,6 +252,21 @@ export function bootstrapApplication(
     });
   }
 
+  // --- Checkout-shipping HTTP adapter (L3) -----------------------------------
+  // Selection depends only on core dependencies (SelectShippingOptionUseCase is
+  // always wired), so the router is always constructed; the shipping-quotes
+  // route is registered only when a logistics service is configured (the use
+  // case is wired), and requests otherwise receive a 404 — it is never faked.
+  const retrieveDynamicShippingQuotes =
+    useCases.useCases.checkout.retrieveDynamicShippingQuotes;
+  const selectShippingOption = useCases.useCases.checkout.selectShippingOption;
+  const checkoutShippingRouter = createCheckoutShippingRouter({
+    retrieveDynamicShippingQuotes,
+    selectShippingOption,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
   let shutDown = false;
 
   const runtime: ApplicationRuntime = {
@@ -196,6 +277,8 @@ export function bootstrapApplication(
     paymentWebhookRouter,
     paymentInitializationRouter,
     swapRouter,
+    checkoutShippingRouter,
+    logisticsWebhookRouter,
 
     async shutdown(): Promise<void> {
       if (shutDown) {
@@ -231,6 +314,21 @@ export function bootstrapApplication(
         swapRouter
           ? "Swap payment: mounted (/store/orders/:orderId/swaps)"
           : "Swap payment: NOT mounted (payment service not configured)",
+      );
+      lines.push(
+        retrieveDynamicShippingQuotes
+          ? "Checkout shipping: mounted (/store/carts/:id/shipping-quotes, /store/carts/:id/shipping-options)"
+          : "Checkout shipping: shipping-options mounted; shipping-quotes NOT mounted (logistics service not configured)",
+      );
+      lines.push(
+        logisticsWebhookRouter
+          ? "Shipbubble webhook: mounted (/store/webhooks/shipbubble)"
+          : "Shipbubble webhook: NOT mounted (SHIPBUBBLE_WEBHOOK_SECRET not set)",
+      );
+      lines.push(
+        externalServices.logisticsService
+          ? "Logistics (Shipbubble): wired"
+          : "Logistics (Shipbubble): NOT wired (SHIPBUBBLE_API_KEY not set)",
       );
       return lines.join("\n");
     },

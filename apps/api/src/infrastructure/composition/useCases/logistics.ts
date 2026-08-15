@@ -4,10 +4,12 @@
 // all of its dependencies are present; missing dependencies are reported
 // rather than faked.
 //
-// NOTE: ProcessCourierTrackingEventUseCase (whose file is named
-// `ProcessCourierTrackingEventUseCase.ts.ts`) requires INotificationService and
-// is therefore unwired today; it is reported without importing its malformed
-// filename.
+// NOTE: ProcessCourierTrackingEventUseCase (the consumer the
+// LogisticsEventWorker routes tracking events through) is always wired — it
+// depends only on repositories/core dependencies. Its notification service is
+// OPTIONAL and injected only when a concrete INotificationService is supplied;
+// without one, customer notifications are skipped (best-effort) and the use
+// case still persists fulfillment state.
 
 import { ConfirmOrderEditUseCase } from "@api/use-cases/logistics/ConfirmOrderEditUseCase";
 import { DetermineSourcingLocationUseCase } from "@api/use-cases/logistics/DetermineSourcingLocationUseCase";
@@ -15,8 +17,11 @@ import { DispatchOrderFulfillmentUseCase } from "@api/use-cases/logistics/Dispat
 import { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
 import { GenerateDraftOrderUseCase } from "@api/use-cases/logistics/GenerateDraftOrderUseCase";
 import { InitiateReturnAuthorizationUseCase } from "@api/use-cases/logistics/InitiateReturnAuthorizationUseCase";
+import { ProcessCourierTrackingEventUseCase } from "@api/use-cases/logistics/ProcessCourierTrackingEventUseCase";
 import { ProcessOrderSwapVarianceUseCase } from "@api/use-cases/logistics/ProcessOrderSwapVarianceUseCase";
 import { ProposeOrderEditUseCase } from "@api/use-cases/logistics/ProposeOrderEditUseCase";
+import { QueueLogisticsEventUseCase } from "@api/use-cases/logistics/QueueLogisticsEventUseCase";
+import { VerifyLogisticsEventSignatureUseCase } from "@api/use-cases/logistics/VerifyLogisticsEventSignatureUseCase";
 import { VerifySwapPaymentEventUseCase } from "@api/use-cases/logistics/VerifySwapPaymentEventUseCase";
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
@@ -27,8 +32,11 @@ export interface LogisticsUseCases {
   finalizeSwapTransaction: FinalizeSwapTransactionUseCase;
   generateDraftOrder?: GenerateDraftOrderUseCase;
   initiateReturnAuthorization?: InitiateReturnAuthorizationUseCase;
+  processCourierTrackingEvent: ProcessCourierTrackingEventUseCase;
   processOrderSwapVariance?: ProcessOrderSwapVarianceUseCase;
   proposeOrderEdit: ProposeOrderEditUseCase;
+  queueLogisticsEvent: QueueLogisticsEventUseCase;
+  verifyLogisticsEventSignature: VerifyLogisticsEventSignatureUseCase;
   verifySwapPaymentEvent: VerifySwapPaymentEventUseCase;
 }
 
@@ -160,6 +168,40 @@ export function buildLogisticsUseCases(
     idGenerator,
     logger,
   );
+
+  // --- Courier tracking event consumer (L5 worker) ---------------------------
+  // Always wired: it resolves fulfillment by providerShipmentId, applies the
+  // courier tracking + dispatch state machines, and persists via
+  // ITransactionManager. The notification service is OPTIONAL — absent, the
+  // customer notification is skipped (best-effort) and fulfillment state is
+  // still persisted.
+  const processCourierTrackingEvent = new ProcessCourierTrackingEventUseCase(
+    deps.fulfillmentRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+    deps.externalServices?.notificationService,
+  );
+
+  // --- Logistics webhook pipeline (L5): signature verification + queueing ----
+  // These only depend on core dependencies (cryptography, queue, audit, id,
+  // logger), so they are always wired. The HTTP router mounts only when
+  // SHIPBUBBLE_WEBHOOK_SECRET is configured; the queue itself carries only the
+  // provider-neutral event (no secrets, no raw bodies).
+  const verifyLogisticsEventSignature =
+    new VerifyLogisticsEventSignatureUseCase(
+      deps.cryptographyService,
+      auditLogService,
+      idGenerator,
+      logger,
+    );
+  const queueLogisticsEvent = new QueueLogisticsEventUseCase(
+    deps.queueService,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
   const finalizeSwapTransaction = new FinalizeSwapTransactionUseCase(
     deps.swapRepository,
     deps.orderRepository,
@@ -172,16 +214,14 @@ export function buildLogisticsUseCases(
     transactionManager,
   );
 
-  report.unwiredUseCase(
-    "ProcessCourierTrackingEventUseCase",
-    "INotificationService",
-  );
-
   report.wiredUseCases(
     "ConfirmOrderEditUseCase",
     "ProposeOrderEditUseCase",
     "VerifySwapPaymentEventUseCase",
     "FinalizeSwapTransactionUseCase",
+    "VerifyLogisticsEventSignatureUseCase",
+    "QueueLogisticsEventUseCase",
+    "ProcessCourierTrackingEventUseCase",
   );
 
   return {
@@ -191,8 +231,11 @@ export function buildLogisticsUseCases(
     finalizeSwapTransaction,
     generateDraftOrder,
     initiateReturnAuthorization,
+    processCourierTrackingEvent,
     processOrderSwapVariance,
     proposeOrderEdit,
+    queueLogisticsEvent,
+    verifyLogisticsEventSignature,
     verifySwapPaymentEvent,
   };
 }

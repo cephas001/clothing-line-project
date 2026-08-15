@@ -80,6 +80,34 @@ async function main(): Promise<void> {
     });
   }
 
+  // 5d. Mount the checkout-shipping endpoints (transport boundary only). The
+  //     router is always present (selection depends only on core
+  //     dependencies); the shipping-quotes route is registered only when a
+  //     logistics service is configured. The handlers map the request into
+  //     RetrieveDynamicShippingQuotesUseCase / SelectShippingOptionUseCase and
+  //     return the application-level result. The client never supplies a
+  //     shipping amount, currency, courier, or request token — the use cases
+  //     resolve everything server-side from the persisted quote list.
+  if (runtime.checkoutShippingRouter) {
+    app.use("/store/carts", runtime.checkoutShippingRouter);
+    logger.info("Checkout shipping mounted", {
+      path: "/store/carts/:id/shipping-quotes, /store/carts/:id/shipping-options",
+    });
+  }
+
+  // 5e. Mount the Shipbubble logistics webhook (raw-body capture happens inside
+  //     the router). Mounted only when SHIPBUBBLE_WEBHOOK_SECRET is configured;
+  //     the handler verifies the signature against the RAW bytes, maps the
+  //     provider event (pure boundary transformation), and enqueues it — it
+  //     never mutates fulfillment, creates shipments, calls Shipbubble, or
+  //     opens a database transaction.
+  if (runtime.logisticsWebhookRouter) {
+    app.use("/store/webhooks/shipbubble", runtime.logisticsWebhookRouter);
+    logger.info("Shipbubble webhook mounted", {
+      path: "/store/webhooks/shipbubble",
+    });
+  }
+
   // 6. Start the HTTP server
   const server = app.listen(port, () => {
     logger.info("API server listening", {

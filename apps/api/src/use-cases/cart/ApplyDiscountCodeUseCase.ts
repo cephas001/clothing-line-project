@@ -188,6 +188,18 @@ export class ApplyDiscountCodeUseCase {
         );
       }
 
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        this.logger.warn("Cart was concurrently modified; retry the request", {
+          err,
+          cartId,
+          code,
+        });
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
+
       // Fallback: log and wrap unexpected errors
       this.logger.error("Failed to persist cart after applying discount code", {
         err,

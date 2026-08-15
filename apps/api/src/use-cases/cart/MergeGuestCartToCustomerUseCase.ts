@@ -120,6 +120,12 @@ export class MergeGuestCartToCustomerUseCase {
           "The cart merge conflicts with an existing record.",
         );
       }
+      if (repositoryError.code === RepositoryErrorCode.LOCKED) {
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
       throw new DomainError("INTERNAL_ERROR", "Failed to merge guest cart.");
     }
   }
