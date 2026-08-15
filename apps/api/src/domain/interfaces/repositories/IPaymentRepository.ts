@@ -5,10 +5,14 @@ import { Payment, PaymentObligationType } from "@api-domain-entities/Payment";
  * Persistence contract for durable payment obligations.
  *
  * `save` is the idempotency backstop: an insert that collides on the UNIQUE
- * (obligation_type, obligation_id) or `reference` constraints surfaces
+ * `reference` constraint or the partial obligation-unique index surfaces
  * RepositoryErrorCode.DUPLICATE, so a concurrent or retried initialization can
- * never create a second payment for the same obligation. Updating an existing
- * payment (by id) reconciles its provider reference / URL / status in place.
+ * never create a second ACTIVE payment for the same obligation. After a failed
+ * obligation has been reset to `failed`, a fresh obligation row may be created
+ * (see migration 0010). `findByObligation` returns the MOST RECENT row for the
+ * obligation (the active one when it exists, otherwise the most recently
+ * failed one). Updating an existing payment (by id) reconciles its provider
+ * reference / URL / status in place.
  */
 export interface IPaymentRepository {
   findById(paymentId: string): Promise<Payment | null>;
@@ -18,6 +22,18 @@ export interface IPaymentRepository {
     obligationType: PaymentObligationType,
     obligationId: string,
   ): Promise<Payment | null>;
+  /**
+   * Count the payment rows previously claimed for the obligation that are in
+   * the `failed` state. With the partial obligation-unique index (migration
+   * 0010) these are exactly the prior RESET attempts: the number is used to
+   * derive a deterministic, per-attempt idempotency reference so a retry never
+   * re-uses a reference that already produced a (possibly different-amount)
+   * gateway transaction, while UNIQUE(reference) stays intact.
+   */
+  countFailedByObligation(
+    obligationType: PaymentObligationType,
+    obligationId: string,
+  ): Promise<number>;
   /**
    * Acquire a row-level lock on the payment for the given app reference within
    * the transaction established by the current ITransactionManager. Runs inside

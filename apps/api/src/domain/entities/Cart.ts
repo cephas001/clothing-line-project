@@ -2,7 +2,10 @@
 import { CartLineItem } from "@api-domain-entities/CartLineItem";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { Promotion } from "@api/domain/entities/Promotion";
-import { PaymentAmountBreakdown } from "@api/domain/shared/contracts";
+import {
+  PaymentAmountBreakdown,
+  ShippingQuote,
+} from "@api/domain/shared/contracts";
 import { JsonObject, JsonValue } from "@api/domain/shared/json";
 
 /**
@@ -26,8 +29,46 @@ export interface CartProps {
   shippingAmountMinor?: number | null;
   /** Server-persisted selected shipping service level. */
   shippingServiceLevel?: string | null;
+  /**
+   * Server-persisted provider request token from the rate response the selected
+   * quote came from; required to create the shipment (two-phase label flow).
+   */
+  shippingRequestToken?: string | null;
+  /** Server-persisted provider courier identity of the selected quote. */
+  shippingCourierId?: string | null;
+  /** Server-persisted provider service code of the selected quote. */
+  shippingServiceCode?: string | null;
+  /**
+   * Application identity of the server-validated quote the client selected.
+   * Part of the single shipping-selection invariant: present ONLY when the
+   * whole selection is present.
+   */
+  shippingQuoteId?: string | null;
+  /** Server-persisted ISO-4217 currency code of the selected quote. */
+  shippingCurrency?: string | null;
+  /**
+   * Server-persisted quotes from the latest rate response (includes the provider
+   * selection fields: courierId/serviceCode/requestToken; NEVER exposed to the
+   * client). Selection resolves against this list so the authoritative amount
+   * and currency ALWAYS come from a server-validated quote.
+   */
+  shippingQuotes?: ShippingQuote[];
+  /**
+   * Canonical fingerprint of the cart's material quote inputs (items, quantity,
+   * price, weight metadata, destination, email, region context) captured when
+   * {@link shippingQuotes} were recorded. A selection is valid ONLY while the
+   * current cart computes the SAME fingerprint — otherwise the quote is stale.
+   */
+  shippingQuoteFingerprint?: string | null;
   /** Server-persisted insurance premium in minor units; null when not opted in. */
   insuranceAmountMinor?: number | null;
+  /**
+   * Optimistic-lock version. Persisted on the cart row and incremented by every
+   * mutation (see {@link Cart.touch}); the repository guards its save against
+   * the version the aggregate was loaded with so a stale concurrent writer is
+   * rejected instead of silently overwriting state (L4 save/reset race).
+   */
+  version?: number;
   metadata?: JsonObject;
   frozen?: boolean;
   frozenReason?: string | null;
@@ -70,7 +111,15 @@ export class Cart {
   public taxAmountMinor: number | null;
   public shippingAmountMinor: number | null;
   public shippingServiceLevel: string | null;
+  public shippingRequestToken: string | null;
+  public shippingCourierId: string | null;
+  public shippingServiceCode: string | null;
+  public shippingQuoteId: string | null;
+  public shippingCurrency: string | null;
+  public shippingQuoteFingerprint: string | null;
   public insuranceAmountMinor: number | null;
+  /** Working optimistic-lock version; bumped by every mutation (touch). */
+  public version: number;
   public metadata: JsonObject;
   public frozen: boolean;
   public frozenReason: string | null;
@@ -90,6 +139,13 @@ export class Cart {
   // Note: This collection is keyed by line item ID, not variant ID.
   private _items: Map<string, CartLineItem>;
   private _appliedPromotion: Promotion | null;
+  private _shippingQuotes: ShippingQuote[];
+  /**
+   * The persisted version this aggregate was hydrated with (or 0 for a new
+   * cart). The repository guards its conflict-update with this value, so a
+   * stale writer fails with LOCKED instead of overwriting a concurrent change.
+   */
+  private _loadedVersion: number;
 
   // -------------------------
   // Constructor
@@ -122,7 +178,18 @@ export class Cart {
     this.taxAmountMinor = props.taxAmountMinor ?? null;
     this.shippingAmountMinor = props.shippingAmountMinor ?? null;
     this.shippingServiceLevel = props.shippingServiceLevel ?? null;
+    this.shippingRequestToken = props.shippingRequestToken ?? null;
+    this.shippingCourierId = props.shippingCourierId ?? null;
+    this.shippingServiceCode = props.shippingServiceCode ?? null;
+    this.shippingQuoteId = props.shippingQuoteId ?? null;
+    this.shippingCurrency = props.shippingCurrency ?? null;
+    this._shippingQuotes = Array.isArray(props.shippingQuotes)
+      ? props.shippingQuotes
+      : [];
+    this.shippingQuoteFingerprint = props.shippingQuoteFingerprint ?? null;
     this.insuranceAmountMinor = props.insuranceAmountMinor ?? null;
+    this.version = props.version ?? 0;
+    this._loadedVersion = this.version;
     this.metadata = props.metadata || {};
 
     // Lifecycle / state
@@ -372,6 +439,40 @@ export class Cart {
   }
 
   /**
+   * clearPaymentInitialization
+   * - Release the payment-initialization MIRROR on the cart (flag, status,
+   *   authorization URL, reference and timestamp) when the durable payment
+   *   obligation has been reset after a failed/abandoned attempt. Only the
+   *   mirror is cleared — the durable Payment rows (including history) live in
+   *   the payment repository and are never deleted here. Refuses to clear a
+   *   paid or converted cart.
+   */
+  public clearPaymentInitialization(): void {
+    if (this.paymentStatus === "paid") {
+      throw new DomainError(
+        "INVALID_OPERATION",
+        "Cannot clear payment state for a paid cart.",
+      );
+    }
+    if (this.isConverted()) {
+      throw new DomainError(
+        "INVALID_OPERATION",
+        "Cannot clear payment state for a converted cart.",
+      );
+    }
+
+    this.paymentInitialized = false;
+    this.paymentStatus = "pending";
+    this.paymentAuthorizationUrl = null;
+    this.paymentReference = null;
+    this.paymentInitializedAt = null;
+    const metadata = { ...this.metadata };
+    delete metadata["paymentInitialization"];
+    this.metadata = metadata;
+    this.touch();
+  }
+
+  /**
    * markPaid
    * - Mark the cart as paid and record the timestamp in metadata.
    */
@@ -445,14 +546,25 @@ export class Cart {
 
   /**
    * applySelectedShippingQuote
-   * - Persist a server-selected shipping quote amount and service level on the
-   *   cart. The amount is integer minor units; the service level is optional.
-   *   This is the ONLY writer of the durable shipping amount the checkout
-   *   total trusts — the client can never supply it directly.
+   * - Persist a server-selected shipping quote on the cart: the amount (integer
+   *   minor units), display service level, currency, and the provider selection
+   *   needed to create the shipment later (courier identity, service code and
+   *   the request token from the rate response). This is the ONLY writer of the
+   *   durable shipping selection the checkout total and the dispatch flow
+   *   trust — the client can never supply these directly, and the logistics
+   *   adapter never chooses a courier itself.
+   * - The selection MUST reference a quote in the server-persisted list
+   *   ({@link recordShippingQuotes}); a stale or forged quoteId is rejected.
    */
   public applySelectedShippingQuote(props: {
+    quoteId: string;
+    courierId: string;
+    serviceCode: string;
+    requestToken: string;
     amountMinor: number;
     serviceLevel?: string | null;
+    currency?: string | null;
+    etaDays?: number | null;
   }): void {
     if (!Number.isInteger(props.amountMinor) || props.amountMinor < 0) {
       throw new DomainError(
@@ -460,8 +572,243 @@ export class Cart {
         "Shipping amount must be a non-negative integer in minor units.",
       );
     }
+    if (!props.quoteId.trim() || !props.courierId.trim() || !props.serviceCode.trim()) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "A shipping quote selection requires a quote id, courier id and service code.",
+      );
+    }
+    if (!props.requestToken.trim()) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "A shipping quote selection requires the provider request token.",
+      );
+    }
+    // The authoritative amount/currency come from the persisted quote list;
+    // applying a quote that is not in it would charge the client an un-validated
+    // price.
+    if (
+      this._shippingQuotes.length > 0 &&
+      !this.getShippingQuoteById(props.quoteId.trim())
+    ) {
+      throw new DomainError(
+        "INVALID_STATE",
+        "The selected shipping quote is not in the latest rate response; re-fetch quotes before selecting.",
+      );
+    }
+    this.shippingQuoteId = props.quoteId.trim();
+    this.shippingCurrency = props.currency?.trim() || null;
     this.shippingAmountMinor = props.amountMinor;
     this.shippingServiceLevel = props.serviceLevel?.trim() || null;
+    this.shippingRequestToken = props.requestToken.trim();
+    this.shippingCourierId = props.courierId.trim();
+    this.shippingServiceCode = props.serviceCode.trim();
+    this.touch();
+  }
+
+  /**
+   * recordShippingQuotes
+   * - Persist the server-validated quote list from the latest rate response on
+   *   the cart (provider selection fields included; NEVER exposed to the
+   *   client). Selection resolves against this list, so the authoritative
+   *   amount and currency ALWAYS come from a server-validated quote.
+   * - Replaces the previous list and keeps the shipping request token in sync.
+   * - A selection is kept ONLY while the SAME quote (same id, amount and
+   *   currency) is still present in the new list; otherwise the cart returns to
+   *   the "no shipping selected" state so a stale or re-priced quote is never
+   *   charged silently.
+   * - Captures {@link shippingQuoteFingerprint} = the canonical fingerprint of
+   *   THIS cart's material quote inputs at record time. A later selection (and
+   *   the authoritative checkout calculation) is valid ONLY while the current
+   *   cart computes the same fingerprint — so a mutated cart can never select
+   *   or charge a quote obtained for a different cart state.
+   */
+  public recordShippingQuotes(quotes: ShippingQuote[]): void {
+    const MAX_QUOTES = 50;
+    const normalized = (Array.isArray(quotes) ? quotes : []).filter(
+      (q) => Boolean(q && typeof q.id === "string" && q.id.trim() !== ""),
+    ).slice(0, MAX_QUOTES);
+
+    const previous = this.shippingQuoteId
+      ? (this._shippingQuotes.find((q) => q.id === this.shippingQuoteId) ?? null)
+      : null;
+
+    this._shippingQuotes = normalized;
+
+    if (normalized.length === 0) {
+      this.clearShippingSelection();
+      this.shippingRequestToken = null;
+      this.shippingQuoteFingerprint = null;
+    } else {
+      this.shippingRequestToken = normalized[0].requestToken?.trim() || null;
+      const current = this.shippingQuoteId
+        ? normalized.find((q) => q.id === this.shippingQuoteId)
+        : undefined;
+      const unchanged =
+        current !== undefined &&
+        previous !== null &&
+        current.amountMinor === previous.amountMinor &&
+        (current.currency ?? null) === (previous.currency ?? null);
+      if (!unchanged) {
+        this.clearShippingSelection();
+      }
+      // The fingerprint is derived from the material quote inputs ONLY (items,
+      // quantities, prices, weight metadata, destination, email, region
+      // context), so it is stable across this shipping-state mutation itself.
+      this.shippingQuoteFingerprint = this.computeQuoteContextFingerprint();
+    }
+    this.touch();
+  }
+
+  /**
+   * shippingQuotes (getter)
+   * - Array view of the server-persisted quote list from the latest rate
+   *   response. Contains provider selection fields; callers MUST NOT expose
+   *   them across the client boundary.
+   */
+  get shippingQuotes(): ShippingQuote[] {
+    return [...this._shippingQuotes];
+  }
+
+  /**
+   * getShippingQuoteById
+   * - Resolve a full server-side quote (provider selection fields included) by
+   *   its deterministic application id. Returns null when the quote is not in
+   *   the persisted list (stale or unknown).
+   */
+  public getShippingQuoteById(quoteId: string): ShippingQuote | null {
+    const id = (quoteId ?? "").trim();
+    if (!id) {
+      return null;
+    }
+    return this._shippingQuotes.find((q) => q.id === id) ?? null;
+  }
+
+  /**
+   * computeQuoteContextFingerprint
+   * - Canonical, deterministic fingerprint of the cart inputs that determine a
+   *   shipping quote: the line items (id, variant, title, quantity, unit price,
+   *   weight metadata), the destination address, the receiver email, and the
+   *   region/sales-channel context. Property order is normalized and object
+   *   keys are sorted recursively so the value is stable across persistence
+   *   round-trips (Postgres jsonb reorders keys).
+   * - Captured by {@link recordShippingQuotes}; compared by
+   *   {@link isShippingQuoteCurrent}.
+   */
+  public computeQuoteContextFingerprint(): string {
+    const items = this.items
+      .slice()
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((item) => ({
+        id: item.id,
+        variantId: item.variantId ?? null,
+        title: item.title ?? null,
+        quantity: item.quantity,
+        unitPriceMinor: item.unitPriceMinor,
+        metadata: item.metadata ?? null,
+      }));
+    return canonicalJson({
+      regionId: this.regionId,
+      salesChannelId: this.salesChannelId,
+      countryCode: this.countryCode ?? null,
+      email: this.email ?? null,
+      shippingAddress: this.shippingAddress ?? null,
+      items,
+    });
+  }
+
+  /**
+   * isShippingQuoteCurrent
+   * - True ONLY while the cart's material quote inputs are unchanged since
+   *   {@link shippingQuotes} were recorded (i.e. the persisted fingerprint still
+   *   matches the current cart). A selection is valid for "THIS cart state" and
+   *   must be re-obtained after the cart changes.
+   */
+  public isShippingQuoteCurrent(): boolean {
+    return Boolean(
+      this.shippingQuoteFingerprint &&
+        this.shippingQuoteFingerprint === this.computeQuoteContextFingerprint(),
+    );
+  }
+
+  /**
+   * isShippingSelectionConsistent
+   * - Defense-in-depth: verifies the durable scalar selection fields agree with
+   *   the server-persisted quote they claim to reference (amount, currency,
+   *   courier, service, request token). A manipulated or partially-written
+   *   selection therefore never becomes an authoritative charge.
+   */
+  public isShippingSelectionConsistent(): boolean {
+    if (!this.hasShippingSelection) {
+      return false;
+    }
+    const quote = this.shippingQuoteId
+      ? this.getShippingQuoteById(this.shippingQuoteId)
+      : null;
+    if (!quote) {
+      return false;
+    }
+    return (
+      this.shippingAmountMinor === quote.amountMinor &&
+      (this.shippingCurrency ?? null) === (quote.currency ?? null) &&
+      this.shippingCourierId === quote.courierId &&
+      this.shippingServiceCode === quote.serviceCode &&
+      this.shippingRequestToken === quote.requestToken
+    );
+  }
+
+  /**
+   * hasShippingSelection (getter)
+   * - The single source of truth distinguishing "shipping selected" from "no
+   *   shipping selected". True ONLY when a complete, server-validated selection
+   *   is present: the application quote identity, the provider courier/service
+   *   identity and request token, and the durable amount + currency.
+   */
+  get hasShippingSelection(): boolean {
+    return Boolean(
+      this.shippingQuoteId &&
+        this.shippingCourierId &&
+        this.shippingServiceCode &&
+        this.shippingRequestToken &&
+        this.shippingAmountMinor !== null &&
+        this.shippingAmountMinor >= 0 &&
+        this.shippingCurrency,
+    );
+  }
+
+  /**
+   * clearShippingSelection
+   * - Reset the cart to the "no shipping selected" state: quote identity,
+   *   provider courier/service identity, request token, amount and currency are
+   *   cleared. The shipping address and the persisted quote list are retained,
+   *   so the client may select again without re-fetching quotes.
+   */
+  public clearShippingSelection(): void {
+    this.shippingQuoteId = null;
+    this.shippingCurrency = null;
+    this.shippingAmountMinor = null;
+    this.shippingServiceLevel = null;
+    this.shippingRequestToken = null;
+    this.shippingCourierId = null;
+    this.shippingServiceCode = null;
+    this.touch();
+  }
+
+  /**
+   * recordShippingRequestToken
+   * - Persist the provider request token from the latest rates response so the
+   *   two-phase label flow can create the shipment later. Records the token
+   *   only; the courier/service selection is recorded by
+   *   {@link applySelectedShippingQuote}.
+   */
+  public recordShippingRequestToken(token: string): void {
+    if (!token.trim()) {
+      throw new DomainError(
+        "VALIDATION_ERROR",
+        "A shipping request token is required.",
+      );
+    }
+    this.shippingRequestToken = token.trim();
     this.touch();
   }
 
@@ -489,6 +836,13 @@ export class Cart {
    *   server-persisted tax, shipping, and insurance. Every component comes from
    *   server state (line prices set at add-time, Promotion config, persisted
    *   quotes) — nothing is trusted from the client.
+   * - The shipping component is read from the DURABLE server-selected shipping
+   *   state (`shippingAmountMinor`), which is written ONLY by
+   *   {@link applySelectedShippingQuote} from a server-validated quote. Callers
+   *   that turn this breakdown into a charge MUST first enforce that a shipping
+   *   selection exists (`hasShippingSelection`), is current for this cart state
+   *   (`isShippingQuoteCurrent`), and is internally consistent
+   *   (`isShippingSelectionConsistent`) — see InitializePaymentSessionUseCase.
    * - All arithmetic is integer minor units; no floating-point math.
    */
   public computeAuthoritativeCheckoutBreakdown(): PaymentAmountBreakdown {
@@ -545,6 +899,27 @@ export class Cart {
    */
   private touch(): void {
     this.updatedAt = new Date().toISOString();
+    this.version = this.version + 1;
+  }
+
+  /**
+   * loadedVersion
+   * - The persisted version this aggregate was hydrated with; the repository
+   *   guards its conflict-update against this value.
+   */
+  get loadedVersion(): number {
+    return this._loadedVersion;
+  }
+
+  /**
+   * acknowledgePersisted
+   * - Called by the repository after a successful save/commit so the aggregate
+   *   treats the just-written version as the new baseline. Fail-closed: if the
+   *   surrounding transaction later rolls back, the next save compares against
+   *   a version that no longer exists and is rejected (never a lost update).
+   */
+  public acknowledgePersisted(): void {
+    this._loadedVersion = this.version;
   }
 
   // -------------------------
@@ -570,7 +945,14 @@ export class Cart {
       taxAmountMinor: this.taxAmountMinor,
       shippingAmountMinor: this.shippingAmountMinor,
       shippingServiceLevel: this.shippingServiceLevel,
+      shippingRequestToken: this.shippingRequestToken,
+      shippingCourierId: this.shippingCourierId,
+      shippingServiceCode: this.shippingServiceCode,
+      shippingQuoteId: this.shippingQuoteId,
+      shippingCurrency: this.shippingCurrency,
+      shippingQuoteFingerprint: this.shippingQuoteFingerprint,
       insuranceAmountMinor: this.insuranceAmountMinor,
+      version: this.version,
       metadata: this.metadata,
       frozen: this.frozen,
       frozenReason: this.frozenReason,
@@ -605,4 +987,27 @@ export class Cart {
         : null,
     };
   }
+}
+
+/**
+ * Deterministic JSON serialization: recursively sorts object keys and
+ * normalizes null/undefined so the output is byte-stable regardless of key
+ * insertion order or persistence round-trips (Postgres jsonb reorders keys).
+ * Used by {@link Cart.computeQuoteContextFingerprint}.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

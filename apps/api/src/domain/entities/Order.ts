@@ -1,7 +1,7 @@
 // apps/api/src/domain/entities/Order.ts
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
-import { PromotionSnapshot } from "@api/domain/shared/contracts";
+import { OrderShippingSnapshot, PromotionSnapshot } from "@api/domain/shared/contracts";
 import { JsonObject } from "@api/domain/shared/json";
 
 /**
@@ -83,6 +83,12 @@ export interface OrderProps {
   pendingReturns?: JsonObject[];
   createdAt?: string;
   promotionSnapshot?: PromotionSnapshot | null;
+  /**
+   * Frozen provider-neutral shipping snapshot (destination, parcel items,
+   * selected quote, request_token) recorded at checkout so the dispatch and
+   * return flows are self-contained and never depend on the mutable cart.
+   */
+  shippingSnapshot?: OrderShippingSnapshot | null;
 }
 
 /**
@@ -143,6 +149,7 @@ export class Order {
   private _fulfillments: JsonObject[];
   private _pendingReturns: JsonObject[];
   public promotionSnapshot: PromotionSnapshot | null;
+  public shippingSnapshot: OrderShippingSnapshot | null;
 
   // -------------------------
   // Constructor and validation
@@ -219,6 +226,7 @@ export class Order {
       ? [...props.pendingReturns]
       : [];
     this.promotionSnapshot = props.promotionSnapshot ?? null;
+    this.shippingSnapshot = props.shippingSnapshot ?? null;
   }
 
   // -------------------------

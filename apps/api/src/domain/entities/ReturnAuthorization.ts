@@ -35,6 +35,12 @@ export interface ReturnAuthorizationProps {
   refundAmountMinor: number;
   status?: ReturnStatus;
   shippingLabelUrl?: string | null;
+  /**
+   * Provider shipment identity of the RETURN label (e.g. "SB-...") — distinct
+   * from the outbound shipment's provider id on the fulfillment. NEVER the
+   * application orderId.
+   */
+  providerShipmentId?: string | null;
   requestedByCustomerId?: string | null;
   createdBy?: string;
   createdAt?: string;
@@ -63,6 +69,7 @@ export class ReturnAuthorization {
   readonly items: ReturnAuthorizationItem[];
   readonly refundAmountMinor: number;
   readonly shippingLabelUrl: string | null;
+  readonly providerShipmentId: string | null;
   readonly requestedByCustomerId: string | null;
   readonly metadata: JsonObject;
 
@@ -122,6 +129,7 @@ export class ReturnAuthorization {
     this.items = props.items ? [...props.items] : [];
     this.refundAmountMinor = props.refundAmountMinor;
     this.shippingLabelUrl = props.shippingLabelUrl ?? null;
+    this.providerShipmentId = props.providerShipmentId ?? null;
     this.requestedByCustomerId = props.requestedByCustomerId ?? null;
     this.createdBy = props.createdBy ?? "system";
     this.createdAt = props.createdAt ?? new Date().toISOString();

@@ -16,6 +16,14 @@ export type ErrorCode =
   | "INTERNAL_ERROR"
   | "JOB_PROCESSING_ERROR"
   | "PAYMENT_VERIFICATION_FAILED"
+  | "LOGISTICS_VERIFICATION_FAILED"
+  /**
+   * A logistics webhook event referenced a provider shipment id with NO local
+   * fulfillment record. The worker must NOT fabricate a fulfillment; the event
+   * is classified as operational reconciliation (retryable, but bounded by the
+   * producer's attempts — never an infinite retry loop).
+   */
+  | "LOGISTICS_EVENT_FULFILLMENT_NOT_FOUND"
   | "EXTERNAL_SERVICE_TIMEOUT"
   | "EXTERNAL_SERVICE_UNAVAILABLE"
   | "EXTERNAL_SERVICE_ERROR"
@@ -56,6 +64,15 @@ export type ErrorCode =
    * reconciliation is required before the refund can be re-issued.
    */
   | "REFUND_REQUIRES_REVIEW"
+  /**
+   * A shipment dispatch was attempted but its outcome is ambiguous (e.g. the
+   * provider request timed out, or the shipment was created at the provider but
+   * could not be confirmed locally). The order MUST NOT be re-dispatched
+   * automatically — a fresh POST could duplicate the shipment. Manual/operator
+   * reconciliation is required to confirm whether a provider shipment exists
+   * and to resolve its tracking/label details.
+   */
+  | "SHIPMENT_REQUIRES_RECONCILIATION"
 
   // Security
   | "INVALID_SIGNATURE"

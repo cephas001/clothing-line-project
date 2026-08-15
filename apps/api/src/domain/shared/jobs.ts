@@ -1,6 +1,11 @@
 // apps/api/src/domain/shared/jobs.ts
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
+import {
+  LogisticsProvider,
+  PROVIDER_LOGISTICS_EVENT_TYPES,
+  ProviderLogisticsEventType,
+} from "@api/domain/shared/contracts";
 
 /**
  * Authoritative queue names for the background-job queues this application
@@ -11,6 +16,7 @@ import { DomainError } from "@api/domain/entities/errors/DomainError";
 export const QUEUE_NAMES = {
   paymentEvents: "payment-events-queue",
   bulkCatalogImport: "bulk-import-queue",
+  logisticsEvents: "logistics-events-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -32,6 +38,11 @@ export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
  *       obligation. The raw provider envelope is never queued.
  * - `ImportBulkCatalogDataUseCase` enqueues the bulk-import metadata to
  *   `bulk-import-queue`.
+ * - The logistics webhook mapper/use case enqueues a typed
+ *   `LogisticsEventJobPayload` to `logistics-events-queue`. The payload is a
+ *   provider-neutral projection of a `ProviderLogisticsEvent`; its `eventKey`
+ *   is the deterministic identity of ONE logical provider event and is used as
+ *   the queue `jobId` (see PART 6 idempotency strategy in contracts.ts).
  *
  * Workers MUST parse job payloads with the exported `parse*` functions instead
  * of casting arbitrary JSON: a malformed payload is a permanent failure
@@ -101,6 +112,26 @@ export interface BulkCatalogImportJobPayload {
   enqueuedAt: string;
 }
 
+/**
+ * Typed job payload for `logistics-events-queue`. Provider-neutral projection
+ * of a `ProviderLogisticsEvent` produced by the provider-specific webhook
+ * mapper. `eventKey` is the deterministic identity of ONE logical provider
+ * event and is used as the queue `jobId`, so one logical event maps to exactly
+ * one job (duplicate deliveries and retries collapse onto the same job).
+ * The payload carries NO API keys, auth headers, raw webhook bodies, or
+ * provider secrets.
+ */
+export interface LogisticsEventJobPayload {
+  provider: LogisticsProvider;
+  eventKey: string;
+  eventType: ProviderLogisticsEventType;
+  providerShipmentId: string;
+  trackingNumber?: string | null;
+  courier?: string | null;
+  status?: string | null;
+  occurredAt?: string | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -110,6 +141,19 @@ function requiredString(value: unknown, field: string): string {
     throw new DomainError(
       "VALIDATION_ERROR",
       `Job payload field '${field}' is required and must be a non-empty string.`,
+    );
+  }
+  return value.trim();
+}
+
+function optionalString(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field '${field}' must be a non-empty string or null.`,
     );
   }
   return value.trim();
@@ -265,4 +309,69 @@ export function parseBulkCatalogImportJobPayload(
   }
 
   return { jobId, adminUserId, fileUrl, fileType, enqueuedAt };
+}
+
+/**
+ * Validate an opaque job payload against the `LogisticsEventJobPayload`
+ * contract. A malformed payload is a permanent failure (retrying cannot fix
+ * it), so the parser rejects it with a `VALIDATION_ERROR` DomainError before
+ * any worker invokes a use case.
+ */
+export function parseLogisticsEventJobPayload(
+  value: unknown,
+): LogisticsEventJobPayload {
+  if (!isRecord(value)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Logistics event job payload must be an object.",
+    );
+  }
+
+  const provider = requiredString(value.provider, "provider");
+  if (provider !== "shipbubble") {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field 'provider' must be a known logistics provider; received "${provider}".`,
+    );
+  }
+
+  const eventKey = requiredString(value.eventKey, "eventKey");
+  const eventType = requiredString(value.eventType, "eventType");
+  if (
+    !PROVIDER_LOGISTICS_EVENT_TYPES.includes(
+      eventType as ProviderLogisticsEventType,
+    )
+  ) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field 'eventType' is not a known normalized logistics event type; received "${eventType}".`,
+    );
+  }
+  const normalizedEventType = eventType as ProviderLogisticsEventType;
+
+  const providerShipmentId = requiredString(
+    value.providerShipmentId,
+    "providerShipmentId",
+  );
+  const trackingNumber = optionalString(value.trackingNumber, "trackingNumber");
+  const courier = optionalString(value.courier, "courier");
+  const status = optionalString(value.status, "status");
+  const occurredAt = optionalString(value.occurredAt, "occurredAt");
+  if (occurredAt !== null && Number.isNaN(Date.parse(occurredAt))) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Job payload field 'occurredAt' must be a valid date string.",
+    );
+  }
+
+  return {
+    provider,
+    eventKey,
+    eventType: normalizedEventType,
+    providerShipmentId,
+    trackingNumber,
+    courier,
+    status,
+    occurredAt,
+  };
 }

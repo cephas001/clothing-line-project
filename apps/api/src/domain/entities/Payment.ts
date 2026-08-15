@@ -273,7 +273,11 @@ export class Payment {
 
   /** Mark the payment as failed (gateway rejection / unrecoverable error). */
   markFailed(): void {
-    if (this._status === "captured" || this._status === "refunded") {
+    if (
+      this._status === "captured" ||
+      this._status === "refunded" ||
+      this._status === "partially_refunded"
+    ) {
       throw new DomainError("INVALID_STATE", "Cannot fail a settled payment.");
     }
     this._status = "failed";
@@ -304,13 +308,34 @@ export class Payment {
    * obligation. Derived from the obligation identity so retries of the same
    * request always produce the same reference. Restricted to the charset
    * Paystack accepts on /transaction/initialize (alphanumeric, `-`, `.`, `=`).
+   *
+   * The optional `attempt` distinguishes a FRESH checkout obligation created
+   * after a prior obligation was reset to `failed`: it is derived from the
+   * durable count of failed obligations, so a retry of the SAME attempt keeps
+   * the same reference (gateway idempotency is preserved) while a NEW attempt
+   * after a reset gets a brand-new reference and therefore a brand-new gateway
+   * transaction — the gateway is never asked to re-use a reference that
+   * already produced a possibly different-amount transaction. Attempt 0 keeps
+   * the historical `CLP-checkout-<id>` format for backward compatibility.
    */
   static buildReference(
     obligationType: PaymentObligationType,
     obligationId: string,
+    attempt = 0,
   ): string {
     const safeType = obligationType.replace(/[^A-Za-z0-9.-]/g, "-");
     const safeId = obligationId.replace(/[^A-Za-z0-9.-=]/g, "-");
-    return `CLP-${safeType}-${safeId}`;
+    const base = `CLP-${safeType}-${safeId}`;
+    return attempt > 0 ? `${base}-A${attempt}` : base;
+  }
+
+  /** True when the obligation can be reset to release the shipping/payment
+   * mutation lock. Never true for a settled obligation. */
+  isResettable(): boolean {
+    return (
+      this._status === "initialization_pending" ||
+      this._status === "initialized" ||
+      this._status === "failed"
+    );
   }
 }
