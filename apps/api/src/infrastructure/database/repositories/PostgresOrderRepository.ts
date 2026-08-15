@@ -13,7 +13,10 @@
 // IFulfillmentRepository).
 
 import { Order } from "@api/domain/entities/Order";
-import type { PromotionSnapshot } from "@api/domain/shared/contracts";
+import type {
+  OrderShippingSnapshot,
+  PromotionSnapshot,
+} from "@api/domain/shared/contracts";
 import type { IOrderRepository } from "@api-domain-interfaces/repositories/IOrderRepository";
 import { TransactionContext } from "../transaction/TransactionContext";
 import { toRepositoryError } from "./errorMapping";
@@ -40,6 +43,7 @@ type OrderRow = {
   flagged_at: string | null;
   fulfillment_halted_at: string | null;
   promotion_snapshot: unknown;
+  shipping_snapshot: unknown;
   created_at: string;
 };
 
@@ -61,6 +65,7 @@ type FulfillmentRow = {
   service_level: string | null;
   status: string;
   metadata: unknown;
+  provider_shipment_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -80,6 +85,45 @@ function toPromotionSnapshot(value: unknown): PromotionSnapshot | null {
     discountValueMinor: snapshot.discountValueMinor ?? 0,
     minimumSpendMinor: snapshot.minimumSpendMinor ?? 0,
     appliedDiscountMinor: snapshot.appliedDiscountMinor ?? 0,
+  };
+}
+
+function toShippingSnapshot(value: unknown): OrderShippingSnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const snapshot = value as Partial<OrderShippingSnapshot>;
+  if (
+    typeof snapshot.requestToken !== "string" ||
+    !snapshot.requestToken ||
+    !snapshot.selection ||
+    typeof snapshot.selection !== "object" ||
+    !snapshot.selection.courierId ||
+    !snapshot.selection.serviceCode ||
+    !snapshot.selection.quoteId ||
+    typeof snapshot.selection.amountMinor !== "number"
+  ) {
+    return null;
+  }
+  if (
+    !snapshot.destination ||
+    typeof snapshot.destination !== "object" ||
+    !snapshot.destination.name ||
+    !snapshot.destination.email ||
+    !snapshot.destination.phone ||
+    !Array.isArray(snapshot.parcelItems)
+  ) {
+    return null;
+  }
+  return {
+    requestToken: snapshot.requestToken,
+    selection: snapshot.selection,
+    destination: snapshot.destination,
+    parcelItems: snapshot.parcelItems,
+    dimensions:
+      snapshot.dimensions && typeof snapshot.dimensions === "object"
+        ? snapshot.dimensions
+        : null,
   };
 }
 
@@ -110,6 +154,7 @@ function toDomain(
     flaggedAt: row.flagged_at,
     fulfillmentHaltedAt: row.fulfillment_halted_at,
     promotionSnapshot: toPromotionSnapshot(row.promotion_snapshot),
+    shippingSnapshot: toShippingSnapshot(row.shipping_snapshot),
     lineItems: lineItemRows.map((li) => ({
       id: li.id,
       variantId: li.variant_id,
@@ -125,6 +170,7 @@ function toDomain(
       labelUrl: f.label_url,
       serviceLevel: f.service_level,
       status: f.status,
+      providerShipmentId: f.provider_shipment_id ?? undefined,
       createdAt: f.created_at,
       metadata:
         f.metadata && typeof f.metadata === "object"
@@ -234,6 +280,9 @@ export class PostgresOrderRepository implements IOrderRepository {
           promotion_snapshot: order.promotionSnapshot
             ? JSON.stringify(order.promotionSnapshot)
             : null,
+          shipping_snapshot: order.shippingSnapshot
+            ? JSON.stringify(order.shippingSnapshot)
+            : null,
           created_at: order.createdAt,
         })
         .onConflict((oc) =>
@@ -259,6 +308,9 @@ export class PostgresOrderRepository implements IOrderRepository {
             fulfillment_halted_at: order.fulfillmentHaltedAt,
             promotion_snapshot: order.promotionSnapshot
               ? JSON.stringify(order.promotionSnapshot)
+              : null,
+            shipping_snapshot: order.shippingSnapshot
+              ? JSON.stringify(order.shippingSnapshot)
               : null,
           }),
         )

@@ -23,7 +23,9 @@ import {
   BusinessUnitMemberRecord,
   CartPromotionSnapshot,
   DraftOrderItem,
+  OrderShippingSnapshot,
   PromotionSnapshot,
+  ShippingQuote,
 } from "@api/domain/shared/contracts";
 import { FulfillmentStatus, PaymentStatus } from "@api/domain/entities/Order";
 import { PaymentObligationType, PaymentState } from "@api/domain/entities/Payment";
@@ -184,6 +186,14 @@ export interface Database {
     /** Value-object shipping address; serialized JSONB. */
     shipping_address: JsonB | null;
     /**
+     * Optimistic-lock version. Incremented on every cart mutation (touch) and
+     * guarded by PostgresCartRepository.save() against the version the
+     * aggregate was loaded with; a stale concurrent writer is rejected with
+     * RepositoryErrorCode.LOCKED instead of silently overwriting (L4
+     * save/reset race correction).
+     */
+    version: number;
+    /**
      * Applied promotion snapshot (CartPromotionSnapshot: full config so a real
      * Promotion entity can be reconstructed on hydration); set via
      * applyDiscount().
@@ -197,6 +207,34 @@ export interface Database {
     shipping_amount_minor: number | null;
     /** Server-persisted selected shipping service level. */
     shipping_service_level: string | null;
+    /**
+     * Server-persisted provider request token from the rate response the
+     * selected shipping quote came from; required to create the shipment later.
+     */
+    shipping_request_token: string | null;
+    /** Server-persisted provider courier identity of the selected shipping quote. */
+    shipping_courier_id: string | null;
+    /** Server-persisted provider service code of the selected shipping quote. */
+    shipping_service_code: string | null;
+    /**
+     * Application identity of the server-validated quote the client selected.
+     * Present ONLY when the whole shipping selection is present.
+     */
+    shipping_quote_id: string | null;
+    /** Server-persisted ISO-4217 currency code of the selected shipping quote. */
+    shipping_currency: string | null;
+    /**
+     * Server-persisted quote list from the latest rate response (includes the
+     * provider selection fields; NEVER exposed to the client). Selection
+     * resolves against this list for an authoritative amount/currency.
+     */
+    shipping_quotes: JsonB<ShippingQuote[]> | null;
+    /**
+     * Canonical fingerprint of the cart's material quote inputs at rate-retrieval
+     * time. A selection is valid ONLY while the current cart computes the same
+     * fingerprint, so a mutated cart can never select or charge a stale quote.
+     */
+    shipping_quote_fingerprint: string | null;
     /** Server-persisted insurance premium in minor units; null when not opted in. */
     insurance_amount_minor: number | null;
     metadata: JsonB;
@@ -271,6 +309,12 @@ export interface Database {
      * history does not depend on the mutable `promotion` table.
      */
     promotion_snapshot: JsonB<PromotionSnapshot> | null;
+    /**
+     * Frozen provider-neutral shipping snapshot (destination, parcel items,
+     * selected quote, request_token) recorded at checkout so dispatch and
+     * return flows are self-contained.
+     */
+    shipping_snapshot: JsonB<OrderShippingSnapshot> | null;
     created_at: Generated<string>;
   };
 
@@ -394,6 +438,12 @@ export interface Database {
     service_level: string | null;
     status: string;
     metadata: JsonB;
+    /**
+     * Provider shipment identity (e.g. "SB-...") — first-class external
+     * identity, NEVER the application orderId. Queryable for cancellation and
+     * return-label flows.
+     */
+    provider_shipment_id: string | null;
     created_at: Generated<string>;
     /** Set by courier tracking events (ProcessCourierTrackingEventUseCase). */
     updated_at: Generated<string>;
@@ -412,6 +462,12 @@ export interface Database {
     created_by: string;
     created_at: Generated<string>;
     metadata: JsonB;
+    /**
+     * Provider shipment identity of the RETURN label (e.g. "SB-...") — the
+     * reverse-shipment identity, distinct from the outbound fulfillment's
+     * provider_shipment_id. NEVER the application orderId.
+     */
+    provider_shipment_id: string | null;
   };
 
   /** domain/entities/Swap. */

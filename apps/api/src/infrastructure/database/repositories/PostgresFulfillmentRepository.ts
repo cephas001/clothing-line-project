@@ -6,9 +6,10 @@
 // contract only guarantees id/orderId/trackingNumber, so the remaining schema
 // columns (courier, label_url, service_level, status, metadata) are written
 // defensively when present on the record and read back as optional fields.
-// `status` defaults to "pending_dispatch" on insert and is updated by courier
-// tracking events. created_at is a DB default; updated_at is regenerated on
-// every write.
+// `status` carries the dispatch lifecycle (see DispatchState in
+// domain/shared/dispatchStateMachine) and defaults to "dispatch_pending" on
+// insert when omitted. created_at is a DB default; updated_at is regenerated
+// on every write.
 
 import type {
   FulfillmentRecord,
@@ -27,6 +28,7 @@ type FulfillmentRow = {
   service_level: string | null;
   status: string;
   metadata: unknown;
+  provider_shipment_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -58,6 +60,7 @@ function toDomain(row: FulfillmentRow): FulfillmentRecord {
   if (row.status) record.status = row.status;
   if (row.created_at) record.createdAt = row.created_at;
   if (row.updated_at) record.updatedAt = row.updated_at;
+  if (row.provider_shipment_id) record.providerShipmentId = row.provider_shipment_id;
   if (row.metadata && typeof row.metadata === "object") {
     record.metadata = row.metadata as JsonObject;
   }
@@ -84,12 +87,30 @@ export class PostgresFulfillmentRepository implements IFulfillmentRepository {
     }
   }
 
+  async findByProviderShipmentId(
+    providerShipmentId: string,
+  ): Promise<FulfillmentRecord | null> {
+    try {
+      const row = await this.context
+        .getDb()
+        .selectFrom("fulfillment")
+        .selectAll()
+        .where("provider_shipment_id", "=", providerShipmentId)
+        .executeTakeFirst();
+
+      return row ? toDomain(row) : null;
+    } catch (err: unknown) {
+      throw toRepositoryError(err);
+    }
+  }
+
   async save(fulfillment: FulfillmentRecord): Promise<void> {
     try {
       const courier = strField(fulfillment, "courier");
       const labelUrl = strField(fulfillment, "labelUrl");
       const serviceLevel = strField(fulfillment, "serviceLevel");
-      const status = strField(fulfillment, "status") ?? "pending_dispatch";
+      const status = strField(fulfillment, "status") ?? "dispatch_pending";
+      const providerShipmentId = strField(fulfillment, "providerShipmentId");
       const metadata = objField(fulfillment);
 
       await this.context
@@ -103,6 +124,7 @@ export class PostgresFulfillmentRepository implements IFulfillmentRepository {
           label_url: labelUrl,
           service_level: serviceLevel,
           status,
+          provider_shipment_id: providerShipmentId,
           metadata: JSON.stringify(metadata ?? {}),
         })
         .onConflict((oc) =>
@@ -113,6 +135,7 @@ export class PostgresFulfillmentRepository implements IFulfillmentRepository {
             label_url: labelUrl,
             service_level: serviceLevel,
             status,
+            provider_shipment_id: providerShipmentId,
             metadata: JSON.stringify(metadata ?? {}),
           }),
         )

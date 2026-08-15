@@ -12,10 +12,17 @@
 import { Cart } from "@api/domain/entities/Cart";
 import { CartLineItem } from "@api/domain/entities/CartLineItem";
 import { Promotion } from "@api/domain/entities/Promotion";
-import type { CartPromotionSnapshot } from "@api/domain/shared/contracts";
+import type {
+  CartPromotionSnapshot,
+  ShippingQuote,
+} from "@api/domain/shared/contracts";
 import type { ICartRepository } from "@api-domain-interfaces/repositories/ICartRepository";
 import { TransactionContext } from "../transaction/TransactionContext";
-import { toRepositoryError } from "./errorMapping";
+import {
+  PostgresRepositoryError,
+  toRepositoryError,
+} from "./errorMapping";
+import { RepositoryErrorCode } from "@api/domain/interfaces/shared/errors/RepositoryError";
 
 type CartRow = {
   id: string;
@@ -29,7 +36,15 @@ type CartRow = {
   tax_amount_minor: number | null;
   shipping_amount_minor: number | null;
   shipping_service_level: string | null;
+  shipping_request_token: string | null;
+  shipping_courier_id: string | null;
+  shipping_service_code: string | null;
+  shipping_quote_id: string | null;
+  shipping_currency: string | null;
+  shipping_quotes: unknown;
+  shipping_quote_fingerprint: string | null;
   insurance_amount_minor: number | null;
+  version: number;
   metadata: unknown;
   frozen: boolean;
   frozen_reason: string | null;
@@ -131,7 +146,17 @@ function toDomain(row: CartRow, lineItemRows: CartLineItemRow[]): Cart {
     taxAmountMinor: row.tax_amount_minor,
     shippingAmountMinor: row.shipping_amount_minor,
     shippingServiceLevel: row.shipping_service_level,
+    shippingRequestToken: row.shipping_request_token,
+    shippingCourierId: row.shipping_courier_id,
+    shippingServiceCode: row.shipping_service_code,
+    shippingQuoteId: row.shipping_quote_id,
+    shippingCurrency: row.shipping_currency,
+    shippingQuotes: Array.isArray(row.shipping_quotes)
+      ? (row.shipping_quotes as ShippingQuote[])
+      : [],
+    shippingQuoteFingerprint: row.shipping_quote_fingerprint,
     insuranceAmountMinor: row.insurance_amount_minor,
+    version: row.version,
     metadata:
       row.metadata && typeof row.metadata === "object"
         ? (row.metadata as Record<string, unknown>)
@@ -183,10 +208,13 @@ export class PostgresCartRepository implements ICartRepository {
     try {
       const db = this.context.getDb();
 
-      await db
-        .insertInto("cart")
-        .values({
-          id: cart.id,
+      // --- Optimistic-lock guarded UPDATE (L4 save/reset race correction) -----
+      // The aggregate is only applied when the row still carries the version it
+      // was loaded with. A stale concurrent writer updates 0 rows and is
+      // rejected below instead of silently overwriting state.
+      const updateResult = await db
+        .updateTable("cart")
+        .set({
           region_id: cart.regionId,
           sales_channel_id: cart.salesChannelId,
           customer_id: cart.customerId,
@@ -199,7 +227,18 @@ export class PostgresCartRepository implements ICartRepository {
           tax_amount_minor: cart.taxAmountMinor,
           shipping_amount_minor: cart.shippingAmountMinor,
           shipping_service_level: cart.shippingServiceLevel,
+          shipping_request_token: cart.shippingRequestToken,
+          shipping_courier_id: cart.shippingCourierId,
+          shipping_service_code: cart.shippingServiceCode,
+          shipping_quote_id: cart.shippingQuoteId,
+          shipping_currency: cart.shippingCurrency,
+          shipping_quotes:
+            cart.shippingQuotes.length > 0
+              ? JSON.stringify(cart.shippingQuotes)
+              : null,
+          shipping_quote_fingerprint: cart.shippingQuoteFingerprint,
           insurance_amount_minor: cart.insuranceAmountMinor,
+          version: cart.version,
           metadata: JSON.stringify(cart.metadata),
           frozen: cart.frozen,
           frozen_reason: cart.frozenReason,
@@ -212,11 +251,33 @@ export class PostgresCartRepository implements ICartRepository {
           payment_authorization_url: cart.paymentAuthorizationUrl,
           payment_initialized_at: cart.paymentInitializedAt,
           payment_reference: cart.paymentReference,
-          created_at: cart.createdAt,
           updated_at: cart.updatedAt,
         })
-        .onConflict((oc) =>
-          oc.column("id").doUpdateSet({
+        .where("id", "=", cart.id)
+        .where("version", "=", cart.loadedVersion)
+        .executeTakeFirst();
+
+      if (updateResult.numUpdatedRows === 0n) {
+        // The row either does not exist yet (brand-new cart) or a concurrent
+        // writer moved the version. Distinguish the two before deciding.
+        const existing = await db
+          .selectFrom("cart")
+          .select("id")
+          .where("id", "=", cart.id)
+          .executeTakeFirst();
+
+        if (existing) {
+          throw new PostgresRepositoryError(
+            RepositoryErrorCode.LOCKED,
+            "Cart was concurrently modified; retry the request.",
+            { cartId: cart.id },
+          );
+        }
+
+        await db
+          .insertInto("cart")
+          .values({
+            id: cart.id,
             region_id: cart.regionId,
             sales_channel_id: cart.salesChannelId,
             customer_id: cart.customerId,
@@ -229,7 +290,18 @@ export class PostgresCartRepository implements ICartRepository {
             tax_amount_minor: cart.taxAmountMinor,
             shipping_amount_minor: cart.shippingAmountMinor,
             shipping_service_level: cart.shippingServiceLevel,
+            shipping_request_token: cart.shippingRequestToken,
+            shipping_courier_id: cart.shippingCourierId,
+            shipping_service_code: cart.shippingServiceCode,
+            shipping_quote_id: cart.shippingQuoteId,
+            shipping_currency: cart.shippingCurrency,
+            shipping_quotes:
+              cart.shippingQuotes.length > 0
+                ? JSON.stringify(cart.shippingQuotes)
+                : null,
+            shipping_quote_fingerprint: cart.shippingQuoteFingerprint,
             insurance_amount_minor: cart.insuranceAmountMinor,
+            version: cart.version,
             metadata: JSON.stringify(cart.metadata),
             frozen: cart.frozen,
             frozen_reason: cart.frozenReason,
@@ -242,10 +314,16 @@ export class PostgresCartRepository implements ICartRepository {
             payment_authorization_url: cart.paymentAuthorizationUrl,
             payment_initialized_at: cart.paymentInitializedAt,
             payment_reference: cart.paymentReference,
+            created_at: cart.createdAt,
             updated_at: cart.updatedAt,
-          }),
-        )
-        .execute();
+          })
+          .execute();
+      }
+
+      // The aggregate's version was persisted; treat it as the new baseline
+      // (fail-closed: if the surrounding transaction rolls back, the next save
+      // compares against a version that no longer exists and is rejected).
+      cart.acknowledgePersisted();
 
       // Replace the line-item set so children mirror the aggregate's items.
       await db.deleteFrom("cart_line_item").where("cart_id", "=", cart.id).execute();

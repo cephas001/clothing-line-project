@@ -4,14 +4,16 @@
 //
 // Persists durable payment obligations. The `payment` table is the FINAL
 // concurrency guard for payment idempotency:
-//   - UNIQUE(obligation_type, obligation_id) — one payment per obligation;
+//   - partial UNIQUE(obligation_type, obligation_id) WHERE status <> 'failed'
+//   — one ACTIVE obligation per business object; a fresh row is allowed once
+//   the prior obligation has been reset to `failed` (migration 0010);
 //   - UNIQUE(reference)                      — one app-generated idempotency key;
 //   - UNIQUE(provider_reference)             — one provider transaction.
 //
 // save() inserts a new row and reconciles an EXISTING row (by id) in place so
 // status transitions (initialized -> captured) persist provider references and
-// the payment URL. A collision on the obligation/reference unique constraints
-// is NOT an id-conflict update and therefore surfaces as
+// the payment URL. A collision on the partial obligation index or the reference
+// UNIQUE constraint is NOT an id-conflict update and therefore surfaces as
 // RepositoryErrorCode.DUPLICATE, which the use-case layer turns into an
 // idempotent replay instead of a second charge.
 
@@ -141,9 +143,30 @@ export class PostgresPaymentRepository implements IPaymentRepository {
         .selectAll()
         .where("obligation_type", "=", obligationType)
         .where("obligation_id", "=", obligationId)
+        .orderBy("created_at", "desc")
         .executeTakeFirst();
 
       return row ? toDomain(row) : null;
+    } catch (err: unknown) {
+      throw toRepositoryError(err);
+    }
+  }
+
+  async countFailedByObligation(
+    obligationType: PaymentObligationType,
+    obligationId: string,
+  ): Promise<number> {
+    try {
+      const row = await this.context
+        .getDb()
+        .selectFrom("payment")
+        .select((eb) => eb.fn.countAll<number>().as("failed_count"))
+        .where("obligation_type", "=", obligationType)
+        .where("obligation_id", "=", obligationId)
+        .where("status", "=", "failed")
+        .executeTakeFirst();
+
+      return Number(row?.failed_count ?? 0);
     } catch (err: unknown) {
       throw toRepositoryError(err);
     }
