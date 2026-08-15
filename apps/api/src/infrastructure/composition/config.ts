@@ -28,6 +28,21 @@
 
 import type { Level } from "pino";
 
+/** Verified sender/origin address required by Shipbubble's rates API. */
+export interface ShipbubbleSenderAddressConfig {
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+}
+
+/** Package dimensions in centimetres. */
+export interface ShipbubblePackageDimensionsConfig {
+  length: number;
+  width: number;
+  height: number;
+}
+
 export interface AppConfig {
   /** HTTP port the Express server listens on. Default: 5000. */
   port: number;
@@ -64,6 +79,48 @@ export interface AppConfig {
   paystackBaseUrl: string;
   /** Per-request Paystack timeout in milliseconds. Default: 10000. */
   paystackTimeoutMs: number;
+  /**
+   * Shipbubble API key. OPTIONAL here — the Shipbubble adapter requires it (plus
+   * the sender address and package category) and fails at construction without
+   * them; the composition root only builds the adapter when the key is present.
+   * Absent => logistics use cases reported unwired.
+   */
+  shipbubbleApiKey?: string;
+  /**
+   * Shipbubble webhook signature secret. OPTIONAL here, like
+   * SHIPBUBBLE_API_KEY — the logistics webhook router is only mounted when it
+   * is present. This is a DISTINCT secret from SHIPBUBBLE_API_KEY: it is the
+   * dedicated secret Shipbubble uses to sign webhook bodies (HMAC-SHA512 over
+   * the raw request bytes, delivered in the `x-shipbubble-signature` header).
+   * It MUST never be derived from or shared with the API key. There is NO
+   * default — a production webhook signing secret is never defaulted. Absent =>
+   * the webhook endpoint is not mounted (requests receive a 404), never a
+   * fallback.
+   */
+  shipbubbleWebhookSecret?: string;
+  /** Shipbubble API base URL. Default: https://api.shipbubble.com (HTTPS enforced). */
+  shipbubbleBaseUrl: string;
+  /** Per-request Shipbubble timeout in milliseconds. Default: 10000. */
+  shipbubbleTimeoutMs: number;
+  /**
+   * Verified sender/origin address required by Shipbubble's rates API
+   * (parsed from SHIPBUBBLE_SENDER_ADDRESS JSON). Absent => the adapter is not
+   * constructed even when the API key is present.
+   */
+  shipbubbleSenderAddress?: ShipbubbleSenderAddressConfig;
+  /**
+   * Shipbubble package category id required by every rates request
+   * (parsed from SHIPBUBBLE_PACKAGE_CATEGORY_ID).
+   */
+  shipbubblePackageCategoryId?: number;
+  /** Fallback per-item weight in kilograms (cart metadata.weightKg wins). Default: 1. */
+  shipbubbleDefaultItemWeightKg: number;
+  /**
+   * Fallback package dimensions in centimetres (parsed from
+   * SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS). Default: { length: 10, width: 10,
+   * height: 10 }.
+   */
+  shipbubbleDefaultPackageDimensions: ShipbubblePackageDimensionsConfig;
 }
 
 const DEFAULT_PORT = 5000;
@@ -73,6 +130,14 @@ const DEFAULT_BCRYPT_SALT_ROUNDS = 12;
 const DEFAULT_LOG_LEVEL: Level = "info";
 const DEFAULT_PAYSTACK_BASE_URL = "https://api.paystack.co";
 const DEFAULT_PAYSTACK_TIMEOUT_MS = 10_000;
+const DEFAULT_SHIPBUBBLE_BASE_URL = "https://api.shipbubble.com";
+const DEFAULT_SHIPBUBBLE_TIMEOUT_MS = 10_000;
+const DEFAULT_SHIPBUBBLE_ITEM_WEIGHT_KG = 1;
+const DEFAULT_SHIPBUBBLE_DIMENSIONS: ShipbubblePackageDimensionsConfig = {
+  length: 10,
+  width: 10,
+  height: 10,
+};
 
 const PINO_LEVELS: readonly Level[] = [
   "trace",
@@ -106,6 +171,24 @@ export function loadAppConfig(
     paystackBaseUrl:
       (env.PAYSTACK_BASE_URL ?? "").trim() || DEFAULT_PAYSTACK_BASE_URL,
     paystackTimeoutMs: parsePaystackTimeout(env.PAYSTACK_TIMEOUT_MS),
+    shipbubbleApiKey: (env.SHIPBUBBLE_API_KEY ?? "").trim() || undefined,
+    shipbubbleWebhookSecret:
+      (env.SHIPBUBBLE_WEBHOOK_SECRET ?? "").trim() || undefined,
+    shipbubbleBaseUrl:
+      (env.SHIPBUBBLE_BASE_URL ?? "").trim() || DEFAULT_SHIPBUBBLE_BASE_URL,
+    shipbubbleTimeoutMs: parseShipbubbleTimeout(env.SHIPBUBBLE_TIMEOUT_MS),
+    shipbubbleSenderAddress: parseShipbubbleSenderAddress(
+      env.SHIPBUBBLE_SENDER_ADDRESS,
+    ),
+    shipbubblePackageCategoryId: parseShipbubbleCategoryId(
+      env.SHIPBUBBLE_PACKAGE_CATEGORY_ID,
+    ),
+    shipbubbleDefaultItemWeightKg: parseShipbubbleItemWeight(
+      env.SHIPBUBBLE_DEFAULT_ITEM_WEIGHT_KG,
+    ),
+    shipbubbleDefaultPackageDimensions: parseShipbubbleDimensions(
+      env.SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS,
+    ),
   };
 }
 
@@ -121,6 +204,120 @@ function parsePaystackTimeout(raw: string | undefined): number {
     );
   }
   return timeout;
+}
+
+/** Absent SHIPBUBBLE_TIMEOUT_MS uses the default; an explicit invalid value fails fast. */
+function parseShipbubbleTimeout(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_SHIPBUBBLE_TIMEOUT_MS;
+  }
+  const timeout = Number(raw);
+  if (!Number.isInteger(timeout) || timeout <= 0) {
+    throw new Error(
+      `SHIPBUBBLE_TIMEOUT_MS must be a positive integer of milliseconds; received "${raw}".`,
+    );
+  }
+  return timeout;
+}
+
+/**
+ * Parse the SHIPBUBBLE_SENDER_ADDRESS JSON ({"name","email","phone","address"}).
+ * Absent -> undefined (the adapter is not constructed without it). An explicit
+ * malformed value fails fast so configuration errors surface at startup.
+ */
+function parseShipbubbleSenderAddress(
+  raw: string | undefined,
+): ShipbubbleSenderAddressConfig | undefined {
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "SHIPBUBBLE_SENDER_ADDRESS must be a JSON object: {\"name\":\"...\",\"email\":\"...\",\"phone\":\"...\",\"address\":\"...\"}.",
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("SHIPBUBBLE_SENDER_ADDRESS must be a JSON object.");
+  }
+  const o = parsed as Record<string, unknown>;
+  const name = typeof o.name === "string" ? o.name.trim() : "";
+  const email = typeof o.email === "string" ? o.email.trim() : "";
+  const phone = typeof o.phone === "string" ? o.phone.trim() : "";
+  const address = typeof o.address === "string" ? o.address.trim() : "";
+  if (!name || !email || !phone || !address) {
+    throw new Error(
+      "SHIPBUBBLE_SENDER_ADDRESS must include non-empty name, email, phone and address.",
+    );
+  }
+  return { name, email, phone, address };
+}
+
+/** Absent SHIPBUBBLE_PACKAGE_CATEGORY_ID uses undefined; an explicit invalid value fails fast. */
+function parseShipbubbleCategoryId(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
+  }
+  const categoryId = Number(raw);
+  if (!Number.isInteger(categoryId) || categoryId <= 0) {
+    throw new Error(
+      `SHIPBUBBLE_PACKAGE_CATEGORY_ID must be a positive integer; received "${raw}".`,
+    );
+  }
+  return categoryId;
+}
+
+/** Absent SHIPBUBBLE_DEFAULT_ITEM_WEIGHT_KG uses 1; an explicit invalid value fails fast. */
+function parseShipbubbleItemWeight(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_SHIPBUBBLE_ITEM_WEIGHT_KG;
+  }
+  const weight = Number(raw);
+  if (!Number.isFinite(weight) || weight <= 0) {
+    throw new Error(
+      `SHIPBUBBLE_DEFAULT_ITEM_WEIGHT_KG must be a positive number; received "${raw}".`,
+    );
+  }
+  return weight;
+}
+
+/**
+ * Parse the SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS JSON ({"length","width",
+ * "height"} in centimetres). Absent -> the documented default.
+ */
+function parseShipbubbleDimensions(
+  raw: string | undefined,
+): ShipbubblePackageDimensionsConfig {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_SHIPBUBBLE_DIMENSIONS;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      'SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS must be a JSON object: {"length":10,"width":10,"height":10}.',
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS must be a JSON object.");
+  }
+  const o = parsed as Record<string, unknown>;
+  const length = Number(o.length);
+  const width = Number(o.width);
+  const height = Number(o.height);
+  if (
+    !Number.isFinite(length) || length <= 0 ||
+    !Number.isFinite(width) || width <= 0 ||
+    !Number.isFinite(height) || height <= 0
+  ) {
+    throw new Error(
+      "SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS length/width/height must be positive numbers.",
+    );
+  }
+  return { length, width, height };
 }
 
 /** Absent PORT uses the development default; an explicit invalid value fails fast. */
