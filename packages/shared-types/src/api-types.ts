@@ -741,8 +741,21 @@ export interface paths {
         put?: never;
         /**
          * Retrieve dynamic shipping quotes for the cart.
-         * @description Quotes are fetched from the logistics provider (e.g. Shipbubble). A shipping address
-         *     must be set first (`INVALID_STATE` otherwise).
+         * @description Quotes are fetched from the logistics provider (e.g. Shipbubble) and the server-validated
+         *     quote list is persisted on the cart. A shipping address must be set first
+         *     (`INVALID_STATE` otherwise).
+         *
+         *     The response exposes ONLY the provider-neutral public projection (`id`, `serviceLevel`,
+         *     `amountMinor`, `currency`, `etaDays`). The provider request token, courier identity, and
+         *     service code never cross the client boundary. The `id` returned here is the value the
+         *     client selects via POST /store/carts/{id}/shipping-options; the authoritative amount,
+         *     currency, and provider selection are resolved server-side from the persisted list, never
+         *     from the client.
+         *
+         *     Quotes are only valid for the exact cart state they were obtained for: if the cart
+         *     changes (items, quantities, prices, weight metadata, destination, email, region context)
+         *     after this call, the persisted quotes become stale and selection is rejected
+         *     (`INVALID_STATE`, 409) until quotes are re-fetched.
          */
         post: {
             parameters: {
@@ -765,6 +778,74 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/shipping-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Select a shipping option for the cart.
+         * @description Selects one of the server-persisted quotes returned by POST /store/carts/{id}/shipping-quotes
+         *     and freezes the authoritative shipping amount/currency + provider selection (courier,
+         *     service code, request token) on the cart.
+         *
+         *     The request body contains ONLY the application `quoteId` (`additionalProperties: false`).
+         *     No financial values (`amountMinor`, `currency`) and no provider selection data
+         *     (`courierId`, `serviceCode`, `requestToken`) are accepted — the API resolves all of these
+         *     server-side from the quote list persisted on the cart at retrieval time, so a client can
+         *     never set the shipping price or courier.
+         *
+         *     Selection is rejected (`INVALID_STATE`, 409) when the cart has changed since the quotes
+         *     were fetched (stale quote — re-fetch first), when the requested quote is not in the
+         *     latest rate response (stale or forged quote id), or when the cart is frozen, already
+         *     initialized, paid, or converted (`INVALID_OPERATION`, 409). Guest checkout remains
+         *     supported; an optional bearer JWT enforces ownership (`PERMISSION_DENIED`, 403 for a
+         *     foreign cart).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SelectShippingOptionRequest"];
+                };
+            };
+            responses: {
+                /** @description Shipping option selected and persisted on the cart. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShippingOptionSelectedResponse"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -1983,6 +2064,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/store/webhooks/shipbubble": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Shipbubble logistics webhook (courier tracking / shipment events).
+         * @description Inbound Shipbubble logistics webhook. The request body is consumed as RAW BYTES and
+         *     verified against the HMAC-SHA512 signature in the `x-shipbubble-signature` header
+         *     (computed over those exact bytes with the dedicated Shipbubble webhook secret — never
+         *     the API key) BEFORE any JSON parsing; a mismatch returns `401` and the event is
+         *     discarded.
+         *
+         *     After verification the payload is validated and mapped to a provider-neutral logistics
+         *     event, then enqueued for background processing. This request NEVER updates fulfillment,
+         *     NEVER creates shipments, NEVER calls Shipbubble, and holds NO database transaction. The
+         *     logistics worker reconciles the event against durable fulfillment state later,
+         *     idempotently by deterministic event key. A `200` acknowledges receipt (and stops the
+         *     provider retrying); a `401` (invalid signature) or `500` (processing outage) causes the
+         *     provider to retry; a `400` (malformed payload) is permanent and should not be retried.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description HMAC-SHA512 (hex) signature of the raw request body, computed by Shipbubble with
+                     *     the dedicated webhook secret. Must be verified against the exact raw bytes.
+                     */
+                    "x-shipbubble-signature": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ShipbubbleWebhookEvent"];
+                };
+            };
+            responses: {
+                /** @description Acknowledged. The verified event was enqueued for background processing. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LogisticsWebhookAck"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/products": {
         parameters: {
             query?: never;
@@ -2919,6 +3064,32 @@ export interface components {
             currency?: string;
             etaDays?: number;
         };
+        /**
+         * @description Contains ONLY the application quote id the client selected from the shipping-quotes
+         *     response. No financial values (amountMinor, currency) and no provider selection data
+         *     (courierId, serviceCode, requestToken) are accepted — the API resolves all of these
+         *     server-side from the quote list persisted on the cart at retrieval time.
+         */
+        SelectShippingOptionRequest: {
+            /**
+             * Format: uuid
+             * @description Application quote id from the shipping-quotes response.
+             */
+            quoteId: string;
+        };
+        /**
+         * @description The server-validated shipping selection frozen on the cart. Provider selection data
+         *     (courierId, serviceCode, requestToken) is never exposed.
+         */
+        ShippingOptionSelectedResponse: {
+            /** Format: uuid */
+            quoteId: string;
+            serviceLevel?: string | null;
+            /** @description Server-validated shipping amount in minor units, frozen on the cart. */
+            amountMinor: number;
+            currency?: string | null;
+            etaDays?: number | null;
+        };
         InsuranceQuoteResponse: {
             /** @description Insurance premium in minor units. */
             premiumMinor: number;
@@ -3420,6 +3591,51 @@ export interface components {
             timestamp: string;
             /** @default true */
             notifyCustomer: boolean;
+        };
+        /** @description Raw Shipbubble webhook envelope as received by /store/webhooks/shipbubble. Field names follow Shipbubble's response conventions (data.order_id / data.id, data.tracking_number, data.status, data.courier). The mapper is a pure provider-boundary transformation: it never looks up records, never decides financial validity, and never mutates fulfillment. */
+        ShipbubbleWebhookEvent: {
+            /** @description Provider event name; normalized best-effort (unknown -> "unknown"). */
+            event?: string;
+            /** @description Provider event id when supplied (the idempotency key). */
+            id?: string;
+            /** @description Provider payload. At least one of order_id / id (the provider shipment identity) is required; the mapper rejects a payload with neither. */
+            data: {
+                /** @description Provider shipment identity (e.g. "SB-..."); NEVER the app orderId. */
+                order_id?: string;
+                /** @description Provider shipment/record id; fallback for providerShipmentId and event identity. */
+                id?: string;
+                /** @description Provider event occurrence id when supplied (the idempotency key). */
+                event_id?: string;
+                tracking_number?: string | null;
+                /**
+                 * @description Raw courier status; unknown values pass through.
+                 * @enum {string}
+                 */
+                status?: "in_transit" | "out_for_delivery" | "delivered" | "failed_attempt";
+                /** @description Courier identity (name or { name, tracking_code }). */
+                courier?: string | {
+                    name?: string;
+                    tracking_code?: string;
+                };
+                /**
+                 * Format: date-time
+                 * @description Event occurrence time; created_at/updated_at are also accepted.
+                 */
+                event_time?: string;
+                /** Format: date-time */
+                created_at?: string;
+                /** Format: date-time */
+                updated_at?: string;
+            };
+        };
+        LogisticsWebhookAck: {
+            /** @constant */
+            status: "ok";
+            /**
+             * @description Always true for a verified, well-formed logistics event — it was accepted for background processing.
+             * @constant
+             */
+            handled: true;
         };
         CreateProductRequest: {
             title: string;
