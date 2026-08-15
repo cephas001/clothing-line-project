@@ -6,7 +6,11 @@ import { ICartRepository } from "@api/domain/interfaces/repositories/ICartReposi
 import { Order, OrderLineItem } from "@api/domain/entities/Order";
 import { Cart } from "@api/domain/entities/Cart";
 import { Payment } from "@api/domain/entities/Payment";
-import { PromotionSnapshot } from "@api/domain/shared/contracts";
+import { PromotionSnapshot, OrderShippingSnapshot } from "@api/domain/shared/contracts";
+import {
+  buildOrderShippingSnapshot,
+  toOrderShippingSnapshot,
+} from "@api/domain/shared/shippingSnapshot";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
@@ -327,6 +331,26 @@ export class FinalizeOrderTransactionUseCase {
     // the order records.
     const chargedLineItems = snapshotLineItems(payment, cart);
 
+    // The order's shipping snapshot MUST be the EXACT shipping the checkout
+    // total was built from: the request token, selected courier/service,
+    // destination, and parcel items frozen on the durable payment obligation at
+    // initialization (mirroring the line-item freeze). An order never
+    // reconstructs shipping from today's rates or a mutated cart. Obligations
+    // created before shipping was frozen degrade to the cart's durable
+    // selection with a warning (historical integrity is preserved by the frozen
+    // financial values, which are already verified against the obligation).
+    const frozenShippingSnapshot = toOrderShippingSnapshot(
+      payment?.metadata?.shippingSnapshot,
+    );
+    const shippingSnapshot =
+      frozenShippingSnapshot ?? buildOrderShippingSnapshot(cart);
+    if (!frozenShippingSnapshot && cart.hasShippingSelection) {
+      this.logger.warn(
+        "Shipping snapshot not frozen on payment obligation; using cart selection",
+        { cartId, transactionReference },
+      );
+    }
+
     const createWork = async () => {
       // Instantiate Order domain entity. `transactionReference` is populated so
       // the order row carries the payment idempotency key; combined with the
@@ -352,6 +376,7 @@ export class FinalizeOrderTransactionUseCase {
         createdAt: nowIso,
         lineItems: chargedLineItems,
         promotionSnapshot,
+        shippingSnapshot,
       });
       if (promotionSnapshot) {
         order.recordPromotionSnapshot(promotionSnapshot);
@@ -451,6 +476,12 @@ export class FinalizeOrderTransactionUseCase {
         throw new DomainError(
           "INTERNAL_ERROR",
           "Database timeout while finalizing order.",
+        );
+      }
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
         );
       }
 

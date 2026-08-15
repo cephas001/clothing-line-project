@@ -11,6 +11,12 @@ import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
 import {
+  ProviderShipmentReference,
+  ReturnLabelRequest,
+  ShipmentParcelItem,
+  ShippingOptionSelection,
+} from "@api/domain/shared/contracts";
+import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
@@ -33,6 +39,13 @@ export interface InitiateReturnAuthorizationInput {
   requestedByCustomerId?: string;
   actorId?: string;
   requireReturnLabel?: boolean;
+  /**
+   * The RETURN courier + service rate the application selected from the
+   * provider's return-rates response. REQUIRED when a return label is
+   * requested — the logistics adapter must never independently choose a return
+   * courier.
+   */
+  returnSelection?: ShippingOptionSelection;
 }
 
 export class InitiateReturnAuthorizationUseCase {
@@ -106,6 +119,37 @@ export class InitiateReturnAuthorizationUseCase {
         throw new DomainError(
           "VALIDATION_ERROR",
           `Item at index ${idx} must include a reasonCode.`,
+        );
+      }
+    }
+
+    // --- Validate the return courier selection when a label is requested ----
+    // The logistics adapter must never independently choose a return courier;
+    // the application supplies the selected return courier + service rate.
+    const returnSelection = input.returnSelection;
+    if (requireReturnLabel) {
+      if (!returnSelection || typeof returnSelection !== "object") {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          "A return courier selection (returnSelection) is required to create a return label.",
+        );
+      }
+      if (
+        typeof (returnSelection.courierId ?? "").trim() !== "string" ||
+        !(returnSelection.courierId ?? "").trim() ||
+        typeof (returnSelection.serviceCode ?? "").trim() !== "string" ||
+        !(returnSelection.serviceCode ?? "").trim()
+      ) {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          "returnSelection must include the return courierId and serviceCode.",
+        );
+      }
+      const amountMinor = Number(returnSelection.amountMinor);
+      if (!Number.isInteger(amountMinor) || amountMinor < 0) {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          "returnSelection amountMinor must be a non-negative integer.",
         );
       }
     }
@@ -210,24 +254,69 @@ export class InitiateReturnAuthorizationUseCase {
 
     // --- Request return shipping label if required
     let returnLabelUrl: string | null = null;
-    let logisticsResponse: any = null;
+    let returnLabelProviderShipmentId: string | null = null;
     if (requireReturnLabel) {
-      try {
-        logisticsResponse = await this.logisticsService.createReturnLabel(
-          loadedOrder.id,
-          items,
+      // Guard keeps the type narrow; the fail-fast validation above already
+      // guarantees returnSelection is present when requireReturnLabel is true.
+      if (!returnSelection) {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          "A return courier selection (returnSelection) is required to create a return label.",
         );
-        if (!logisticsResponse || !logisticsResponse.url) {
+      }
+      // The provider starts a return from the ORIGINAL outbound shipment's
+      // provider id — never the application orderId. The destination and parcel
+      // items come from the order's frozen shipping snapshot.
+      const originalShipment = resolveOriginalShipment(loadedOrder);
+      if (!originalShipment) {
+        this.logger.error(
+          "No provider shipment reference available for return label",
+          { orderId, actorId, auditId },
+        );
+        throw new DomainError(
+          "INVALID_STATE",
+          "The order has no provider shipment reference to create a return label from.",
+        );
+      }
+      const destination = loadedOrder.shippingSnapshot?.destination;
+      if (!destination) {
+        this.logger.error(
+          "Order has no frozen shipping destination for return label",
+          { orderId, actorId, auditId },
+        );
+        throw new DomainError(
+          "INVALID_STATE",
+          "The order has no frozen shipping destination to create a return label for.",
+        );
+      }
+      const parcelItems = buildReturnParcelItems(loadedOrder, items);
+      const returnRequest: ReturnLabelRequest = {
+        orderId: loadedOrder.id,
+        items: items.map((it) => ({
+          lineItemId: it.lineItemId,
+          quantity: Number(it.quantity),
+        })),
+        originalShipment,
+        destination,
+        parcelItems,
+        returnSelection,
+      };
+      try {
+        const result = await this.logisticsService.createReturnLabel(
+          returnRequest,
+        );
+        if (!result || !result.providerShipmentId) {
           this.logger.error(
             "Logistics service returned invalid return label data",
-            { orderId, logisticsResponse, actorId, auditId },
+            { orderId, result, actorId, auditId },
           );
           throw new DomainError(
             "EXTERNAL_SERVICE_ERROR",
             "Logistics provider returned invalid return label data.",
           );
         }
-        returnLabelUrl = logisticsResponse.url;
+        returnLabelUrl = result.url ?? null;
+        returnLabelProviderShipmentId = result.providerShipmentId;
       } catch (err: any) {
         const svcErr = err as RepositoryError | undefined;
         this.logger.error("Failed to create return shipping label", {
@@ -276,14 +365,23 @@ export class InitiateReturnAuthorizationUseCase {
       })),
       refundAmountMinor: refundTotalMinor,
       shippingLabelUrl: returnLabelUrl,
+      // The RETURN label's provider shipment id as a first-class identity,
+      // distinct from the outbound fulfillment's provider_shipment_id.
+      providerShipmentId: returnLabelProviderShipmentId,
       status: "pending_receipt",
       requestedByCustomerId: requestedByCustomerId ?? null,
       createdBy: actorId,
       createdAt: nowIso,
       metadata: {
-        logisticsResponse: logisticsResponse
-          ? { providerReference: logisticsResponse.providerReference ?? null }
-          : null,
+        logisticsResponse: {
+          // Legacy mirror of the return identity for readers that predate the
+          // provider_shipment_id column; it lives on this RMA row and never
+          // touches the outbound fulfillment's provider reference.
+          providerReference: returnLabelProviderShipmentId,
+          // The return-rate selection is preserved so the RMA records which
+          // return courier/service/rate produced the label.
+          ...(returnSelection ? { returnSelection } : {}),
+        },
       },
     });
 
@@ -335,11 +433,11 @@ export class InitiateReturnAuthorizationUseCase {
         if (
           requireReturnLabel &&
           typeof this.logisticsService.cancelReturnLabel === "function" &&
-          logisticsResponse?.providerReference
+          returnLabelProviderShipmentId
         ) {
-          await this.logisticsService.cancelReturnLabel(
-            logisticsResponse.providerReference,
-          );
+          await this.logisticsService.cancelReturnLabel(loadedOrder.id, {
+            providerShipmentId: returnLabelProviderShipmentId,
+          });
         }
       } catch (compErr: any) {
         this.logger.warn(
@@ -388,4 +486,76 @@ export class InitiateReturnAuthorizationUseCase {
     });
     return { rmaId, refundAmountMinor: refundTotalMinor, returnLabelUrl };
   }
+}
+
+/**
+ * Resolve the PROVIDER shipment identity of the order's outbound shipment.
+ * Prefers the first-class `providerShipmentId` on the fulfillment record and
+ * falls back to the legacy `metadata.logisticsResponse.providerReference`.
+ * Returns null when no provider identity is recorded.
+ */
+function resolveOriginalShipment(order: Order): ProviderShipmentReference | null {
+  const fulfillment = order.fulfillments.find(
+    (f) => f && typeof f === "object",
+  );
+  if (!fulfillment) {
+    return null;
+  }
+  const record = fulfillment as Record<string, unknown>;
+
+  const readString = (value: unknown): string | null =>
+    typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+
+  const providerShipmentId =
+    readString(record["providerShipmentId"]) ??
+    (() => {
+      const metadata = record["metadata"];
+      if (metadata && typeof metadata === "object") {
+        const logisticsResponse = (metadata as Record<string, unknown>)[
+          "logisticsResponse"
+        ];
+        if (logisticsResponse && typeof logisticsResponse === "object") {
+          return readString(
+            (logisticsResponse as Record<string, unknown>)["providerReference"],
+          );
+        }
+      }
+      return null;
+    })();
+
+  if (!providerShipmentId) {
+    return null;
+  }
+  return {
+    providerShipmentId,
+    trackingNumber: readString(record["trackingNumber"]),
+  };
+}
+
+/**
+ * Build the parcel items being returned from the order's frozen shipping
+ * snapshot (titles/weights) and the order's frozen line pricing. Each parcel is
+ * tied to its line item so quantities and weights reconcile with the provider.
+ */
+function buildReturnParcelItems(
+  order: Order,
+  items: Array<{ lineItemId: string; quantity: number; reasonCode: string }>,
+): ShipmentParcelItem[] {
+  const snapshotParcels = order.shippingSnapshot?.parcelItems ?? [];
+  return items.map((it) => {
+    const line = order.lineItems.find(
+      (li) => String(li.id) === String(it.lineItemId),
+    );
+    const snapshot = snapshotParcels.find(
+      (p) => String(p.lineItemId) === String(it.lineItemId),
+    );
+    return {
+      lineItemId: it.lineItemId,
+      title: snapshot?.title ?? `Item ${it.lineItemId}`,
+      description: snapshot?.description ?? null,
+      quantity: Number(it.quantity),
+      unitPriceMinor: line?.unitPriceMinor ?? 0,
+      weightKg: snapshot?.weightKg ?? null,
+    };
+  });
 }

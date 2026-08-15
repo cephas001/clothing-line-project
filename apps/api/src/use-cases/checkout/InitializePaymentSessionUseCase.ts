@@ -13,6 +13,7 @@ import {
 } from "#domain/interfaces/shared/errors/RepositoryError";
 import { Cart } from "@api/domain/entities/Cart";
 import { Payment } from "@api/domain/entities/Payment";
+import { buildOrderShippingSnapshot } from "@api/domain/shared/shippingSnapshot";
 import { ITransactionManager } from "#domain/interfaces/shared/ITransactionManager";
 import { IRegionRepository } from "#domain/interfaces/repositories/IRegionRepository";
 
@@ -21,6 +22,11 @@ import { IRegionRepository } from "#domain/interfaces/repositories/IRegionReposi
  *
  * Responsibilities:
  * - Validate inputs and cart state (cart exists, non-zero total, not already paid).
+ * - Require a complete, CURRENT, internally-consistent server-validated shipping
+ *   selection (hasShippingSelection + isShippingQuoteCurrent +
+ *   isShippingSelectionConsistent) and a region-consistent shipping currency, so
+ *   an unselected, stale, or manipulated shipping amount can never become an
+ *   authoritative charge.
  * - Claim a DURABLE payment obligation (Payment row keyed by checkout/cartId) in
  *   the database BEFORE contacting the gateway, in the INITIALIZATION_PENDING
  *   state. The database UNIQUE constraints (obligation, reference, provider
@@ -137,11 +143,46 @@ export class InitializePaymentSessionUseCase {
       );
     }
 
+    // --- Shipping selection is a required, authoritative checkout component ----
+    // The checkout total is only trustworthy when the cart carries a complete,
+    // server-validated shipping selection that is (a) present, (b) still current
+    // for THIS cart state (the material quote inputs — items, quantities,
+    // prices, weight metadata, destination, email, region context — are
+    // unchanged since the quotes were obtained), and (c) internally consistent
+    // with the server-persisted quote it references. Any gap means a stale or
+    // manipulated shipping amount could otherwise become an authoritative
+    // charge, so payment MUST NOT initialize.
+    //   - no shipping selected          -> INVALID_STATE (select first)
+    //   - free shipping (amount 0)      -> allowed (still a valid selection)
+    //   - stale quote                   -> INVALID_STATE (re-fetch + re-select)
+    //   - cart/address mutated          -> INVALID_STATE (fingerprint mismatch)
+    //   - invalid/mismatched courier    -> INVALID_STATE (consistency guard)
+    //   - repeated request              -> idempotent replay (unchanged)
+    if (!cart.hasShippingSelection) {
+      throw new DomainError(
+        "INVALID_STATE",
+        "A shipping option must be selected before initializing payment.",
+      );
+    }
+    if (!cart.isShippingQuoteCurrent()) {
+      throw new DomainError(
+        "INVALID_STATE",
+        "The cart has changed since shipping quotes were obtained; re-fetch shipping quotes and select again.",
+      );
+    }
+    if (!cart.isShippingSelectionConsistent()) {
+      throw new DomainError(
+        "INVALID_STATE",
+        "The selected shipping option is inconsistent with the latest rate response; re-fetch shipping quotes.",
+      );
+    }
+
     // --- Validate cart state
     // ONE authoritative server-side breakdown (subtotal − discount + tax +
     // shipping + insurance). The client never supplies a total, discount, tax,
     // shipping amount, or currency — every component is derived from server
-    // state on the cart.
+    // state on the cart. The shipping component comes from the DURABLE
+    // server-selected shipping state validated above.
     const breakdown = cart.computeAuthoritativeCheckoutBreakdown();
     const chargeTotalMinor = breakdown.totalMinor;
     if (!Number.isFinite(chargeTotalMinor) || chargeTotalMinor <= 0) {
@@ -179,6 +220,26 @@ export class InitializePaymentSessionUseCase {
       throw new DomainError("REGION_NOT_FOUND", "Region not found.");
     }
 
+    // --- Currency consistency across the whole charge --------------------------
+    // The shipping amount is charged in the SELECTED quote's currency
+    // (cart.shippingCurrency), but the durable payment obligation and the
+    // gateway call use the REGION currency. Summing minor units of different
+    // currencies would produce a meaningless total, so the selected quote's
+    // currency MUST equal the region currency (compared case-insensitively:
+    // the region stores lowercase ISO codes while provider quotes are commonly
+    // uppercase). This is the single guard keeping ShippingQuote, the cart
+    // selection, the authoritative breakdown, and Payment.amountMinor/currency
+    // in one currency.
+    if (
+      cart.shippingCurrency &&
+      cart.shippingCurrency.toUpperCase() !== region.currencyCode.toUpperCase()
+    ) {
+      throw new DomainError(
+        "INVALID_OPERATION",
+        "The selected shipping option's currency does not match the region currency.",
+      );
+    }
+
     // Paystack requires a customer email on /transaction/initialize. The cart
     // already carries the contact email (set via Cart.assignCustomer / the
     // contact step); this use case supplies it to the gateway payload and
@@ -192,10 +253,50 @@ export class InitializePaymentSessionUseCase {
       );
     }
 
-    // Deterministic, durable idempotency reference for this checkout obligation.
-    // The same cart always resolves to the same reference, so a retry can never
-    // create a second payment intent or a second gateway transaction.
-    const paymentReference = Payment.buildReference("checkout", cartId);
+    // --- Deterministic, durable idempotency reference for THIS attempt ---------
+    // The reference is derived from the count of prior FAILED checkout
+    // obligations. A retry of the SAME attempt (no reset has run, so the count
+    // has not changed) keeps the SAME reference — the gateway and the
+    // UNIQUE(reference) backstop remain idempotent. After a reset
+    // (ResetFailedPaymentInitializationUseCase marks the obligation `failed`)
+    // the count increments, producing a NEW reference and therefore a NEW
+    // gateway transaction: the gateway is never asked to re-use a reference
+    // that already produced a possibly different-amount transaction, while the
+    // historical failed row (and its reference/history) is preserved.
+    let failedAttemptCount: number;
+    try {
+      failedAttemptCount = await this.paymentRepository.countFailedByObligation(
+        "checkout",
+        cartId,
+      );
+    } catch (err: unknown) {
+      const repoErr = err as RepositoryError | undefined;
+      this.logger.error("Failed to resolve payment attempt context", {
+        err,
+        cartId,
+      });
+      if (repoErr?.code === RepositoryErrorCode.CONNECTION) {
+        throw new DomainError(
+          "INTERNAL_ERROR",
+          "Database connection error while resolving payment attempts.",
+        );
+      }
+      if (repoErr?.code === RepositoryErrorCode.TIMEOUT) {
+        throw new DomainError(
+          "INTERNAL_ERROR",
+          "Database timeout while resolving payment attempts.",
+        );
+      }
+      throw new DomainError(
+        "INTERNAL_ERROR",
+        "Failed to resolve payment attempt context.",
+      );
+    }
+    const paymentReference = Payment.buildReference(
+      "checkout",
+      cartId,
+      failedAttemptCount,
+    );
 
     // --- Claim the payment obligation (database is the concurrency guard) ---
     // The obligation is durably persisted as INITIALIZATION_PENDING BEFORE the
@@ -227,6 +328,14 @@ export class InitializePaymentSessionUseCase {
             // EXACTLY what was agreed at initialization, even if the cart
             // mutates before the webhook arrives.
             lineItems: cart.snapshotChargedLineItems(),
+            // Freeze the shipping snapshot (request token, selected courier/
+            // service, destination, parcel items) so the finalized order's
+            // OrderShippingSnapshot is the EXACT shipping the checkout total
+            // was built from — never a reconstruction from today's rates or a
+            // mutated cart. A valid selection is guaranteed by the guards above
+            // (hasShippingSelection + isShippingQuoteCurrent +
+            // isShippingSelectionConsistent).
+            shippingSnapshot: buildOrderShippingSnapshot(cart)!,
           },
         });
         await this.paymentRepository.save(intent);
@@ -245,6 +354,16 @@ export class InitializePaymentSessionUseCase {
           );
         }
         payment = existing;
+        // A concurrent reset (ResetFailedPaymentInitializationUseCase) marked
+        // the obligation `failed` while this request was in flight, so the
+        // reference derived above no longer describes a fresh attempt. Fail
+        // closed: the client re-runs initialization against the new attempt.
+        if (payment.status === "failed") {
+          throw new DomainError(
+            "INVALID_OPERATION",
+            "The payment obligation was reset concurrently; re-run payment initialization.",
+          );
+        }
       } else {
         this.logger.error("Failed to claim payment obligation", {
           err,
@@ -321,6 +440,12 @@ export class InitializePaymentSessionUseCase {
           throw new DomainError(
             "INTERNAL_ERROR",
             "Database timeout while saving cart.",
+          );
+        }
+        if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+          throw new DomainError(
+            "LOCK_ACQUISITION_FAILED",
+            "Cart was concurrently modified; retry the request.",
           );
         }
         throw new DomainError("INTERNAL_ERROR", "Failed to persist cart.");
@@ -471,6 +596,12 @@ export class InitializePaymentSessionUseCase {
         throw new DomainError(
           "INTERNAL_ERROR",
           "Database timeout while saving cart.",
+        );
+      }
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
         );
       }
 

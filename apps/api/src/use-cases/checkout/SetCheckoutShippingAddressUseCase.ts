@@ -177,6 +177,17 @@ export class SetCheckoutShippingAddressUseCase {
         );
       }
 
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        this.logger.warn("Cart was concurrently modified; retry the request", {
+          err,
+          cartId,
+        });
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
+
       this.logger.error(
         "Failed to persist cart after setting shipping address",
         { err, cartId },
