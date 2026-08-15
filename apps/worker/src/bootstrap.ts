@@ -96,6 +96,12 @@ export function bootstrapWorker(
   // FinalizeOrderTransactionUseCase for every checkout event, and
   // VerifySwapPaymentEventUseCase before FinalizeSwapTransactionUseCase for
   // every swap event (dispatched on the payload's obligationType).
+  //
+  // LogisticsEventWorker routes every provider-neutral logistics event through
+  // ProcessCourierTrackingEventUseCase (resolve by providerShipmentId -> apply
+  // the state machines -> persist via ITransactionManager -> audit). The worker
+  // never creates shipments, never calls Shipbubble, and never holds a
+  // transaction across anything external.
   const workers = buildWorkers({
     logger,
     bullConnection: infrastructure.bullConnection,
@@ -103,6 +109,8 @@ export function bootstrapWorker(
     finalizeOrderTransaction: useCases.useCases.checkout.finalizeOrderTransaction,
     verifySwapPaymentEvent: useCases.useCases.logistics.verifySwapPaymentEvent,
     finalizeSwapTransaction: useCases.useCases.logistics.finalizeSwapTransaction,
+    processCourierTrackingEvent:
+      useCases.useCases.logistics.processCourierTrackingEvent,
     bulkCatalogImportProcessor: options.bulkCatalogImportProcessor,
   });
 

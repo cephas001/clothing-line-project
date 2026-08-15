@@ -230,6 +230,7 @@ export function classifyError(err: unknown): JobFailureKind {
       case "EXTERNAL_SERVICE_UNAVAILABLE":
       case "EXTERNAL_SERVICE_ERROR":
       case "LOCK_ACQUISITION_FAILED":
+      case "LOGISTICS_EVENT_FULFILLMENT_NOT_FOUND":
         return "retry";
       default:
         return "retry";

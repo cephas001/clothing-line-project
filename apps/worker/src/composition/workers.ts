@@ -12,6 +12,13 @@
 // `obligationType`. All four are always present because they only depend on
 // repositories/IAuditLogService.
 //
+// LogisticsEventWorker consumes the logistics-events-queue (L5): it routes
+// every provider-neutral logistics event through
+// ProcessCourierTrackingEventUseCase (resolve by providerShipmentId -> apply
+// the state machines -> persist via ITransactionManager -> audit). The worker
+// itself never creates shipments, never calls Shipbubble, and never holds a
+// transaction across anything external.
+//
 // BulkCatalogImportWorker requires an injected processor because its consuming
 // application use case (ProcessBulkCatalogImportUseCase) does not exist yet; it
 // is left explicitly unavailable until the composition root is given one. No
@@ -25,9 +32,11 @@ import type { FinalizeOrderTransactionUseCase } from "@api/use-cases/checkout/Fi
 import type { VerifyPaymentEventUseCase } from "@api/use-cases/checkout/VerifyPaymentEventUseCase";
 import type { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
 import type { VerifySwapPaymentEventUseCase } from "@api/use-cases/logistics/VerifySwapPaymentEventUseCase";
+import type { ProcessCourierTrackingEventUseCase } from "@api/use-cases/logistics/ProcessCourierTrackingEventUseCase";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { WorkerRegistry } from "../workers/WorkerRegistry";
 import { PaymentEventWorker } from "../workers/PaymentEventWorker";
+import { LogisticsEventWorker } from "../workers/LogisticsEventWorker";
 import {
   BulkCatalogImportWorker,
   BulkCatalogImportProcessor,
@@ -45,6 +54,8 @@ export interface WorkerBuildOptions {
   verifySwapPaymentEvent?: VerifySwapPaymentEventUseCase;
   /** Atomic swap finalization, provided by the logistics use-case factory. */
   finalizeSwapTransaction?: FinalizeSwapTransactionUseCase;
+  /** Logistics-event consumer, provided by the logistics use-case factory (always present). */
+  processCourierTrackingEvent: ProcessCourierTrackingEventUseCase;
   /** Provided once ProcessBulkCatalogImportUseCase (or an equivalent processor) exists. */
   bulkCatalogImportProcessor?: BulkCatalogImportProcessor;
 }
@@ -101,6 +112,18 @@ export function buildWorkers(options: WorkerBuildOptions): WorkerComposition {
       missingDependency: "ProcessBulkCatalogImportUseCase (injected processor)",
     });
   }
+
+  // LogisticsEventWorker consumes the logistics-events-queue. The consumer use
+  // case (ProcessCourierTrackingEventUseCase) is always wired by the logistics
+  // use-case factory, so the worker is always registered.
+  registry.register(
+    new LogisticsEventWorker({
+      connection: options.bullConnection,
+      processCourierTrackingEvent: options.processCourierTrackingEvent,
+      logger: options.logger,
+    }),
+  );
+  started.push("LogisticsEventWorker");
 
   return { registry, report: { started, unavailable } };
 }
