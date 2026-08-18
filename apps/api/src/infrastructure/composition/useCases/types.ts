@@ -29,6 +29,8 @@ import type { ISearchService } from "@api/domain/interfaces/services/ISearchServ
 import type { ISessionRevocationService } from "@api/domain/interfaces/services/ISessionRevocationService";
 import type { ITaxCalculationService } from "@api/domain/interfaces/services/ITaxCalculationService";
 import type { ITokenService } from "@api/domain/interfaces/services/ITokenService";
+import type { RuntimeKind, UseCaseAvailability } from "./capabilities";
+import { EXTERNAL_SERVICE_CAPABILITIES, classifyUnwired } from "./capabilities";
 
 export interface UseCaseDependencies extends Repositories {
   logger: ILogger;
@@ -65,30 +67,155 @@ export interface ExternalServiceDependencies {
 export interface UnwiredUseCase {
   useCase: string;
   missingDependency: string;
+  /** Availability classification derived from the actual composition graph. */
+  status: UseCaseAvailability;
+  /** Human-readable reason; the diagnostics render this as-is. */
+  detail: string;
+  /**
+   * Optional caller-supplied note that documents a domain constraint
+   * (e.g. the L4/L5 invariant that the worker must never create shipments).
+   */
+  note?: string;
 }
 
 export interface UseCaseReport {
   wired: string[];
   unwired: UnwiredUseCase[];
+  /** Per-status counts for startup telemetry + the describe() summary line. */
+  summary: {
+    wired: number;
+    unavailableMissingInfrastructure: number;
+    unavailableMissingConfiguration: number;
+    deferredByDesign: number;
+  };
+}
+
+export interface UseCaseReportOptions {
+  /** The runtime this composition serves. Default: "api". */
+  runtime?: RuntimeKind;
 }
 
 /**
  * Collects which use cases were constructed (wired) and which were skipped
- * because a dependency has no implementation yet (unwired).
+ * because a dependency has no implementation yet (unwired). Each unwired entry
+ * is classified against the runtime the composition serves, so the diagnostics
+ * distinguish missing infrastructure capability (no adapter exists), missing
+ * configuration (adapter exists but its config is absent), and deferred by
+ * design (the use case belongs to the other runtime's responsibility).
  */
 export class UseCaseReportBuilder {
+  private readonly runtime: RuntimeKind;
   private readonly wired: string[] = [];
   private readonly unwired: UnwiredUseCase[] = [];
+
+  constructor(options: UseCaseReportOptions = {}) {
+    this.runtime = options.runtime ?? "api";
+  }
 
   wiredUseCases(...names: string[]): void {
     this.wired.push(...names);
   }
 
-  unwiredUseCase(name: string, missingDependency: string): void {
-    this.unwired.push({ useCase: name, missingDependency });
+  unwiredUseCase(name: string, missingDependency: string, note?: string): void {
+    const classification = classifyUnwired(missingDependency, this.runtime);
+    this.unwired.push({
+      useCase: name,
+      missingDependency,
+      status: classification.status,
+      detail: classification.detail,
+      ...(note ? { note } : {}),
+    });
   }
 
   toReport(): UseCaseReport {
-    return { wired: [...this.wired], unwired: [...this.unwired] };
+    const count = (status: UseCaseAvailability): number =>
+      this.unwired.filter((u) => u.status === status).length;
+    return {
+      wired: [...this.wired],
+      unwired: [...this.unwired],
+      summary: {
+        wired: this.wired.length,
+        unavailableMissingInfrastructure: count(
+          "unavailable-missing-infrastructure",
+        ),
+        unavailableMissingConfiguration: count(
+          "unavailable-missing-configuration",
+        ),
+        deferredByDesign: count("deferred-by-design"),
+      },
+    };
   }
+}
+
+/**
+ * Render one unwired use case as a compact, scannable line:
+ *
+ *   SearchProductsUseCase → ISearchService
+ *   InitializePaymentSessionUseCase → IPaymentService (set PAYSTACK_SECRET_KEY)
+ *   DispatchOrderFulfillmentUseCase → ILogisticsService (L4/L5 invariant: ...)
+ *
+ * Missing-configuration entries append the env var that would wire the
+ * adapter; deferred entries append the caller-supplied note when present.
+ */
+function unwiredEntryLine(u: UnwiredUseCase): string {
+  let hint = "";
+  if (u.status === "unavailable-missing-configuration") {
+    const configEnv = EXTERNAL_SERVICE_CAPABILITIES[u.missingDependency]
+      ?.configEnv;
+    if (configEnv) {
+      hint = ` (set ${configEnv})`;
+    }
+  } else if (u.note) {
+    hint = ` (${u.note})`;
+  }
+  return `  ${u.useCase} → ${u.missingDependency}${hint}`;
+}
+
+/**
+ * Render the use-case composition report as a compact startup diagnostic tree,
+ * grouped by availability status with blank-line separation. Shared by the API
+ * and worker composition roots so the boot summaries stay consistent. Lines
+ * carry RELATIVE indentation (base 0); each runtime's describe() applies its
+ * own uniform body indent.
+ */
+export function useCaseReportLines(report: UseCaseReport): string[] {
+  const lines: string[] = [];
+  const { summary } = report;
+  lines.push(
+    "Use cases",
+    `  Wired: ${summary.wired}`,
+    `  Unwired: ${report.unwired.length}`,
+    `    Missing infrastructure: ${summary.unavailableMissingInfrastructure}`,
+    `    Missing configuration: ${summary.unavailableMissingConfiguration}`,
+    `    Deferred by design: ${summary.deferredByDesign}`,
+  );
+
+  const groups: Array<{
+    label: string;
+    status: UseCaseAvailability;
+  }> = [
+    {
+      label: "Unavailable — missing infrastructure capability:",
+      status: "unavailable-missing-infrastructure",
+    },
+    {
+      label: "Unavailable — missing configuration:",
+      status: "unavailable-missing-configuration",
+    },
+    {
+      label: "Deferred by design:",
+      status: "deferred-by-design",
+    },
+  ];
+  for (const group of groups) {
+    const entries = report.unwired.filter((u) => u.status === group.status);
+    if (entries.length === 0) {
+      continue;
+    }
+    lines.push("", group.label);
+    for (const u of entries) {
+      lines.push(unwiredEntryLine(u));
+    }
+  }
+  return lines;
 }

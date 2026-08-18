@@ -16,6 +16,7 @@ import {
   UseCaseReport,
   UseCaseReportBuilder,
 } from "./types";
+import type { RuntimeKind } from "./capabilities";
 
 export interface AllUseCases {
   admin: AdminUseCases;
@@ -33,10 +34,20 @@ export interface UseCaseComposition {
   report: UseCaseReport;
 }
 
+export interface BuildUseCasesOptions {
+  /**
+   * The runtime this composition serves. Defaults to "api". The worker
+   * composition root passes "worker" so unwired entries that belong to the API
+   * runtime are reported as deferred by design, never as configuration gaps.
+   */
+  runtime?: RuntimeKind;
+}
+
 export function buildUseCases(
   deps: UseCaseDependencies,
+  options: BuildUseCasesOptions = {},
 ): UseCaseComposition {
-  const report = new UseCaseReportBuilder();
+  const report = new UseCaseReportBuilder({ runtime: options.runtime });
 
   const admin = buildAdminUseCases(deps, report);
   const cart = buildCartUseCases(deps, report);

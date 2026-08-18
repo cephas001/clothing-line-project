@@ -79,6 +79,7 @@ export function buildLogisticsUseCases(
     report.unwiredUseCase(
       "DispatchOrderFulfillmentUseCase",
       "ILogisticsService",
+      "L4/L5 invariant: worker logistics-event processing must never create shipments.",
     );
   }
 
