@@ -21,7 +21,7 @@ import { describe, it } from "../../harness/runner";
 import { expect } from "../../harness/expect";
 import express, { Express } from "express";
 import type { AddressInfo } from "node:net";
-import { createPaymentInitializationRouter } from "@api/adapters/http/PaymentInitializationRouter";
+import { createPaymentInitializationRouter } from "@api/adapters/http/routers/PaymentInitializationRouter";
 import { createPaymentHarness } from "../../integration/payment/harness";
 import { FakeTokenService } from "../../fakes/FakeTokenService";
 import { NoopLogger } from "../../fakes/NoopLogger";

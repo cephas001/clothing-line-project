@@ -1,4 +1,4 @@
-// apps/api/src/adapters/http/PaymentWebhookRouter.ts
+// apps/api/src/adapters/http/routers/PaymentWebhookRouter.ts
 
 // HTTP adapter for the payment-gateway webhook endpoint (/store/payments/webhook).
 //

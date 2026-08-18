@@ -1,4 +1,4 @@
-// apps/api/src/adapters/http/SwapRouter.ts
+// apps/api/src/adapters/http/routers/SwapRouter.ts
 
 // HTTP adapter for the swap-payment endpoint (POST /store/orders/:orderId/swaps).
 //
@@ -31,6 +31,10 @@
 // confirmation stays exclusively in the webhook -> queue -> PaymentEventWorker
 // flow (VerifySwapPaymentEventUseCase then FinalizeSwapTransactionUseCase).
 //
+// Errors flow through the canonical pipeline (../errors.ts) — the single
+// code->status table — so the swap endpoint can never drift from the rest of
+// the boundary.
+//
 // Response contract (matches SwapResponse):
 //   201  { swapId, variance, action, paymentUrl }
 //   400  VALIDATION_ERROR / INVALID_INPUT / INVALID_RETURN_QUANTITY
@@ -45,12 +49,17 @@
 // logged and never echoed into responses.
 
 import express from "express";
-import type { ErrorRequestHandler, Request, Response } from "express";
+import type { Request, Response } from "express";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import type { ITokenService } from "@api/domain/interfaces/services/ITokenService";
 import type { ProcessOrderSwapVarianceUseCase } from "@api/use-cases/logistics/ProcessOrderSwapVarianceUseCase";
-import { resolveActorFromBearerToken } from "./auth";
+import {
+  mapDomainErrorToHttp,
+  sendErrorResponse,
+  createBodyParseErrorHandler,
+} from "../errors";
+import { resolveActorFromBearerToken } from "../middleware/auth";
 
 const SWAP_BODY_LIMIT = "100kb";
 const ALLOWED_BODY_KEYS = [
@@ -112,23 +121,20 @@ export function createSwapRouter(deps: SwapRouterDeps): express.Router {
           paymentUrl: result.paymentUrl ?? null,
         });
       } catch (err: unknown) {
-        const mapped = mapSwapError(err);
+        const mapped = mapDomainErrorToHttp(err);
         deps.logger.warn("Swap request rejected", {
           status: mapped.status,
           code: mapped.code,
           orderId: req.params.orderId,
         });
-        res.status(mapped.status).json({
-          success: false,
-          error: { code: mapped.code, message: mapped.message },
-        });
+        sendErrorResponse(res, mapped);
       }
     },
   );
 
   // express.json errors (malformed body, oversized payload) never reach the
   // route handler; map them to the standard envelope.
-  router.use(bodyParseErrorHandler(deps.logger));
+  router.use(createBodyParseErrorHandler(deps.logger, "Swap"));
 
   return router;
 }
@@ -213,86 +219,4 @@ function parseSwapRequestBody(body: unknown): {
   }
 
   return { returnLineItemId, returnQuantity, newVariantId, paymentRedirectBaseUrl };
-}
-
-/**
- * Resolve the authenticated actor from the `Authorization: Bearer <jwt>` header.
- * Shared with the other storefront routers (see ./auth). Returns undefined when
- * no header is presented. Throws UNAUTHORIZED_ACCESS for a
- * present-but-invalid header or token. A customerId is never read from the
- * request body.
- */
-
-/**
- * Map a thrown error to the standard error envelope. External infrastructure
- * failures (gateway timeouts, unavailability, DB errors) surface as
- * application-level 500s — never as raw provider errors — and the durable
- * obligation is left untouched for idempotent retry.
- */
-function mapSwapError(err: unknown): {
-  status: number;
-  code: string;
-  message: string;
-} {
-  if (err instanceof DomainError) {
-    switch (err.code) {
-      case "VALIDATION_ERROR":
-      case "INVALID_INPUT":
-      case "INVALID_RETURN_QUANTITY":
-        return { status: 400, code: err.code, message: err.message };
-      case "UNAUTHORIZED_ACCESS":
-        return { status: 401, code: err.code, message: err.message };
-      case "PERMISSION_DENIED":
-        // Authenticated but the order belongs to a different customer.
-        return { status: 403, code: err.code, message: err.message };
-      case "RESOURCE_NOT_FOUND":
-        return { status: 404, code: err.code, message: err.message };
-      case "INVALID_OPERATION":
-      case "REGIONAL_PRICE_MISSING":
-      case "REFUND_REQUIRES_REVIEW":
-        // Conflict: the swap cannot be priced/completed with the current
-        // state (missing region/currency/customer/email, unsettled obligation,
-        // ambiguous refund). The client should not blindly retry.
-        return { status: 409, code: err.code, message: err.message };
-      case "EXTERNAL_SERVICE_TIMEOUT":
-      case "EXTERNAL_SERVICE_UNAVAILABLE":
-      case "EXTERNAL_SERVICE_ERROR":
-      case "INTERNAL_ERROR":
-        return { status: 500, code: err.code, message: err.message };
-      default:
-        return { status: 500, code: err.code, message: err.message };
-    }
-  }
-  return {
-    status: 500,
-    code: "INTERNAL_ERROR",
-    message: "Internal server error.",
-  };
-}
-
-function bodyParseErrorHandler(logger: ILogger): ErrorRequestHandler {
-  return (err: unknown, _req, res, _next) => {
-    const status = isEntityTooLarge(err) ? 413 : 400;
-    logger.warn("Swap request body rejected", {
-      status,
-      bodyError: isEntityTooLarge(err) ? "too_large" : "unparseable",
-    });
-    res.status(status).json({
-      success: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: isEntityTooLarge(err)
-          ? "Request body too large."
-          : "Request body is not valid JSON.",
-      },
-    });
-  };
-}
-
-function isEntityTooLarge(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { type?: unknown }).type === "entity.too.large"
-  );
 }

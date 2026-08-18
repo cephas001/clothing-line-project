@@ -1,4 +1,4 @@
-// apps/api/src/adapters/http/PaymentInitializationRouter.ts
+// apps/api/src/adapters/http/routers/PaymentInitializationRouter.ts
 
 // HTTP adapter for the payment-intent endpoint (POST /store/carts/:id/payment-sessions).
 //
@@ -28,6 +28,10 @@
 // client-supplied payment status — asynchronous confirmation stays exclusively
 // in the webhook -> queue -> PaymentEventWorker flow.
 //
+// Errors flow through the canonical pipeline (../errors.ts) — the single
+// code->status table — so this endpoint can never drift from the rest of the
+// boundary.
+//
 // Response contract (matches PaymentSessionResponse):
 //   200  { authorizationUrl, reference }
 //   400  VALIDATION_ERROR (malformed body / unknown fields / wrong types)
@@ -45,12 +49,17 @@
 // logged and never echoed into responses.
 
 import express from "express";
-import type { ErrorRequestHandler, Request, Response } from "express";
+import type { Request, Response } from "express";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import type { ITokenService } from "@api/domain/interfaces/services/ITokenService";
 import type { InitializePaymentSessionUseCase } from "@api/use-cases/checkout/InitializePaymentSessionUseCase";
-import { resolveActorFromBearerToken } from "./auth";
+import {
+  mapDomainErrorToHttp,
+  sendErrorResponse,
+  createBodyParseErrorHandler,
+} from "../errors";
+import { resolveActorFromBearerToken } from "../middleware/auth";
 
 const INIT_BODY_LIMIT = "100kb";
 const ALLOWED_BODY_KEYS = ["returnUrl"] as const;
@@ -104,23 +113,20 @@ export function createPaymentInitializationRouter(
           reference: result.reference,
         });
       } catch (err: unknown) {
-        const mapped = mapPaymentInitializationError(err);
+        const mapped = mapDomainErrorToHttp(err);
         deps.logger.warn("Payment initialization rejected", {
           status: mapped.status,
           code: mapped.code,
           cartId: req.params.id,
         });
-        res.status(mapped.status).json({
-          success: false,
-          error: { code: mapped.code, message: mapped.message },
-        });
+        sendErrorResponse(res, mapped);
       }
     },
   );
 
   // express.json errors (malformed body, oversized payload) never reach the
   // route handler; map them to the standard envelope.
-  router.use(bodyParseErrorHandler(deps.logger));
+  router.use(createBodyParseErrorHandler(deps.logger, "Payment initialization"));
 
   return router;
 }
@@ -160,85 +166,4 @@ function parseInitRequestBody(body: unknown): string | undefined {
     );
   }
   return returnUrlValue.trim();
-}
-
-/**
- * Resolve the authenticated actor from the `Authorization: Bearer <jwt>` header.
- * Shared with the other storefront routers (see ./auth). Returns undefined for
- * guest checkout (no header). Throws UNAUTHORIZED_ACCESS for a
- * present-but-invalid header or token. A customerId is never read from the
- * request body.
- */
-
-/**
- * Map a thrown error to the standard error envelope. External infrastructure
- * failures (gateway timeouts, unavailability, DB errors) surface as
- * application-level 500s — never as raw provider errors — and the durable
- * obligation is left untouched for idempotent retry.
- */
-function mapPaymentInitializationError(err: unknown): {
-  status: number;
-  code: string;
-  message: string;
-} {
-  if (err instanceof DomainError) {
-    switch (err.code) {
-      case "VALIDATION_ERROR":
-      case "INVALID_INPUT":
-        return { status: 400, code: err.code, message: err.message };
-      case "UNAUTHORIZED_ACCESS":
-        return { status: 401, code: err.code, message: err.message };
-      case "PERMISSION_DENIED":
-        // Authenticated but the cart belongs to a different customer.
-        return { status: 403, code: err.code, message: err.message };
-      case "CART_NOT_FOUND":
-      case "REGION_NOT_FOUND":
-        return { status: 404, code: err.code, message: err.message };
-      case "INVALID_OPERATION":
-      case "INVALID_STATE":
-        // Conflict: already initialized / already paid / already converted /
-        // settled obligation / empty cart / shipping not selected, stale, or
-        // inconsistent. The client should not blindly retry.
-        return { status: 409, code: err.code, message: err.message };
-      case "EXTERNAL_SERVICE_TIMEOUT":
-      case "EXTERNAL_SERVICE_UNAVAILABLE":
-      case "EXTERNAL_SERVICE_ERROR":
-      case "INTERNAL_ERROR":
-        return { status: 500, code: err.code, message: err.message };
-      default:
-        return { status: 500, code: err.code, message: err.message };
-    }
-  }
-  return {
-    status: 500,
-    code: "INTERNAL_ERROR",
-    message: "Internal server error.",
-  };
-}
-
-function bodyParseErrorHandler(logger: ILogger): ErrorRequestHandler {
-  return (err: unknown, _req, res, _next) => {
-    const status = isEntityTooLarge(err) ? 413 : 400;
-    logger.warn("Payment initialization body rejected", {
-      status,
-      bodyError: isEntityTooLarge(err) ? "too_large" : "unparseable",
-    });
-    res.status(status).json({
-      success: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: isEntityTooLarge(err)
-          ? "Request body too large."
-          : "Request body is not valid JSON.",
-      },
-    });
-  };
-}
-
-function isEntityTooLarge(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { type?: unknown }).type === "entity.too.large"
-  );
 }

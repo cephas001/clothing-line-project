@@ -32,17 +32,31 @@ import {
   InfrastructureDependencies,
 } from "./infrastructure";
 import { buildRepositories, Repositories } from "./repositories";
+import { CachedProductReadRepository } from "../caching/CachedProductReadRepository";
+import {
+  InvalidatingMoneyAmountRepository,
+  InvalidatingProductRepository,
+  InvalidatingVariantRepository,
+} from "../caching/InvalidatingCatalogRepositories";
+import { ProductReadCacheInvalidator } from "../caching/ProductReadCacheInvalidator";
 import { buildUseCases, UseCaseComposition } from "./useCases";
 import type { ExternalServiceDependencies } from "./useCases/types";
 import { PaystackPaymentService } from "../services/PaystackPaymentService";
 import { PaystackWebhookPayloadMapper } from "../services/PaystackWebhookPayloadMapper";
 import { ShipbubbleLogisticsService } from "../services/ShipbubbleLogisticsService";
 import { ShipbubbleWebhookPayloadMapper } from "../services/ShipbubbleWebhookPayloadMapper";
-import { createPaymentWebhookRouter } from "../../adapters/http/PaymentWebhookRouter";
-import { createShipbubbleWebhookRouter } from "../../adapters/http/ShipbubbleWebhookRouter";
-import { createPaymentInitializationRouter } from "../../adapters/http/PaymentInitializationRouter";
-import { createSwapRouter } from "../../adapters/http/SwapRouter";
-import { createCheckoutShippingRouter } from "../../adapters/http/CheckoutShippingRouter";
+import { buildNotificationService } from "./notificationService";
+import { RegionalPricingService } from "../services/RegionalPricingService";
+import { RegionalTaxCalculationService } from "../services/RegionalTaxCalculationService";
+import {
+  createAuthRouter,
+  createCatalogRouter,
+  createCheckoutShippingRouter,
+  createPaymentInitializationRouter,
+  createPaymentWebhookRouter,
+  createShipbubbleWebhookRouter,
+  createSwapRouter,
+} from "../../adapters/http";
 import type { Router } from "express";
 
 export interface BootstrapOptions {
@@ -87,6 +101,20 @@ export interface ApplicationRuntime {
    */
   checkoutShippingRouter?: Router;
   /**
+   * Storefront authentication router (POST /store/auth and
+   * POST /store/customers/logout). Always present: both use cases depend only
+   * on core dependencies. Pure transport boundary — the use cases own
+   * credential verification and session revocation.
+   */
+  authRouter: Router;
+  /**
+   * Storefront catalogue router (browse/search/details/related/reviews/
+   * availability/categories). Always present; routes whose use case is unwired
+   * (no search service, recommendation engine, or pricing service) are not
+   * registered and return 404 — they are never faked.
+   */
+  catalogRouter: Router;
+  /**
    * Shipbubble logistics webhook HTTP router, present only when
    * SHIPBUBBLE_WEBHOOK_SECRET is configured. The API server mounts it at
    * /store/webhooks/shipbubble. Pure transport boundary: verify signature ->
@@ -111,6 +139,44 @@ export function bootstrapApplication(
   const infrastructure = buildInfrastructure(config);
   const repositories = buildRepositories(infrastructure.transactionContext);
   const logger = infrastructure.logger;
+
+  // --- Product read cache (L9 Part 2/3): read-through decorator + invalidation -
+  // Read side: wraps the Postgres-backed IProductReadRepository with the
+  // versioned, fail-open, TTL-bounded cache. Postgres stays the source of
+  // truth; the cache only short-circuits identical read contexts. Redis
+  // failures are logged and the request falls back to Postgres. The shared
+  // ioredis client is reused (no second connection).
+  //
+  // Write side: every catalog/pricing/inventory mutation that reaches these
+  // three repositories (product, variant, moneyAmount) bumps the read cache
+  // GENERATION (ProductReadCacheInvalidator) — O(1), no key scans/deletes, and
+  // fail-open so a Redis hiccup can never fail a write. Reservation and
+  // checkout flows never write these repositories, so high-frequency inventory
+  // movement can never thrash the cache. The worker runtime composes
+  // repositories directly and is deliberately NOT wrapped (no worker catalog
+  // writes exist today; BulkCatalogImportWorker has no processor wired).
+  const invalidator = new ProductReadCacheInvalidator({
+    redis: infrastructure.redis,
+    logger,
+  });
+  repositories.productReadRepository = new CachedProductReadRepository({
+    source: repositories.productReadRepository,
+    redis: infrastructure.redis,
+    logger,
+    ttlSeconds: config.productCacheTtlSeconds,
+  });
+  repositories.productRepository = new InvalidatingProductRepository(
+    repositories.productRepository,
+    invalidator,
+  );
+  repositories.variantRepository = new InvalidatingVariantRepository(
+    repositories.variantRepository,
+    invalidator,
+  );
+  repositories.moneyAmountRepository = new InvalidatingMoneyAmountRepository(
+    repositories.moneyAmountRepository,
+    invalidator,
+  );
 
   // --- External services: default Paystack adapter when a secret is present ----
   // The Paystack adapter is infrastructure-only (never queries repositories);
@@ -153,6 +219,38 @@ export function bootstrapApplication(
       defaultItemWeightKg: config.shipbubbleDefaultItemWeightKg,
       defaultPackageDimensions: config.shipbubbleDefaultPackageDimensions,
     });
+  }
+
+  // --- Notification adapter (Resend) when the API key is present -------------
+  // Constructed ONLY via the shared infrastructure/composition factory; fails
+  // fast when the required sender address is missing, so an incomplete
+  // notification configuration can never start with a half-built adapter. The
+  // adapter is infrastructure-only (never queries repositories, never enqueues,
+  // never mutates business state); recipient-preference suppression happens
+  // inside it BEFORE any provider call. An explicit
+  // `externalServices.notificationService` override wins over the default.
+  if (!externalServices.notificationService) {
+    externalServices.notificationService = buildNotificationService(
+      config,
+      logger,
+    );
+  }
+
+  // --- Pricing & tax services (L7): DB-backed, provider-neutral ---------------
+  // Constructed unconditionally: they resolve authoritative pricing and tax
+  // from repositories (MoneyAmount + Region), require no secrets, and never
+  // contact external providers. Explicit overrides win over the defaults so
+  // tests can substitute fakes. Wiring them lights up AddCartLineItemUseCase,
+  // GetVariantAvailabilityUseCase, and SetCheckoutShippingAddressUseCase.
+  if (!externalServices.pricingService) {
+    externalServices.pricingService = new RegionalPricingService(
+      repositories.moneyAmountRepository,
+    );
+  }
+  if (!externalServices.taxCalculationService) {
+    externalServices.taxCalculationService = new RegionalTaxCalculationService(
+      repositories.regionRepository,
+    );
   }
 
   // --- Use cases: every use case receives the concrete IAuditLogService -------
@@ -267,6 +365,36 @@ export function bootstrapApplication(
     logger,
   });
 
+  // --- Storefront auth HTTP adapter (API-L1) ------------------------------
+  // Always constructed: AuthenticateCustomerUseCase and
+  // RevokeCustomerSessionUseCase depend only on core dependencies. Pure
+  // transport boundary: strict {email,password}/{reason} bodies, bearer-token
+  // identity from the shared auth helper, and the use cases own credential
+  // verification + denylist revocation.
+  const authRouter = createAuthRouter({
+    authenticateCustomer: useCases.useCases.customers.authenticateCustomer,
+    revokeCustomerSession: useCases.useCases.customers.revokeCustomerSession,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
+  // --- Storefront catalogue HTTP adapter (API-L1) -------------------------
+  // Always constructed; the search / related-products / availability routes are
+  // registered only when the corresponding use case is wired (external
+  // service present). Pure transport boundary: query/header parsing only.
+  const catalogRouter = createCatalogRouter({
+    browseCatalog: useCases.useCases.catalog.browseCatalog,
+    getProductDetails: useCases.useCases.catalog.getProductDetails,
+    retrieveCategoryTree: useCases.useCases.catalog.retrieveCategoryTree,
+    submitProductReview: useCases.useCases.catalog.submitProductReview,
+    searchProducts: useCases.useCases.catalog.searchProducts,
+    resolveCrossSellingProducts:
+      useCases.useCases.catalog.resolveCrossSellingProducts,
+    getVariantAvailability: useCases.useCases.catalog.getVariantAvailability,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
   let shutDown = false;
 
   const runtime: ApplicationRuntime = {
@@ -279,6 +407,8 @@ export function bootstrapApplication(
     swapRouter,
     checkoutShippingRouter,
     logisticsWebhookRouter,
+    authRouter,
+    catalogRouter,
 
     async shutdown(): Promise<void> {
       if (shutDown) {
@@ -325,10 +455,44 @@ export function bootstrapApplication(
           ? "Shipbubble webhook: mounted (/store/webhooks/shipbubble)"
           : "Shipbubble webhook: NOT mounted (SHIPBUBBLE_WEBHOOK_SECRET not set)",
       );
+      lines.push("Auth: mounted (/store/auth, /store/customers/logout)");
+      lines.push(
+        `Catalogue: mounted (/store/products, /store/products/:id, /store/product-categories, /store/products/:id/reviews)${
+          useCases.useCases.catalog.searchProducts
+            ? " + /store/products/search"
+            : ""
+        }${
+          useCases.useCases.catalog.resolveCrossSellingProducts
+            ? " + /store/products/:id/related"
+            : ""
+        }${
+          useCases.useCases.catalog.getVariantAvailability
+            ? " + /store/variants/:id/availability"
+            : ""
+        }`,
+      );
       lines.push(
         externalServices.logisticsService
           ? "Logistics (Shipbubble): wired"
           : "Logistics (Shipbubble): NOT wired (SHIPBUBBLE_API_KEY not set)",
+      );
+      lines.push(
+        externalServices.pricingService
+          ? "Pricing (regional): wired"
+          : "Pricing (regional): NOT wired",
+      );
+      lines.push(
+        externalServices.taxCalculationService
+          ? "Tax (regional): wired"
+          : "Tax (regional): NOT wired",
+      );
+      lines.push(
+        externalServices.notificationService
+          ? "Notifications (Resend): wired"
+          : "Notifications (Resend): NOT wired (NOTIFICATION_API_KEY not set)",
+      );
+      lines.push(
+        `Product read cache: Redis (TTL ${config.productCacheTtlSeconds}s, generation-bump invalidation on product/variant/pricing writes)`,
       );
       return lines.join("\n");
     },

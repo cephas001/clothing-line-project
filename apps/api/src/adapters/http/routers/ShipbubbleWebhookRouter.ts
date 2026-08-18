@@ -1,4 +1,4 @@
-// apps/api/src/adapters/http/ShipbubbleWebhookRouter.ts
+// apps/api/src/adapters/http/routers/ShipbubbleWebhookRouter.ts
 
 // HTTP adapter for the Shipbubble logistics webhook endpoint
 // (/store/webhooks/shipbubble).

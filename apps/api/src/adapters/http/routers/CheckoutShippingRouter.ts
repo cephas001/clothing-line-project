@@ -1,4 +1,4 @@
-// apps/api/src/adapters/http/CheckoutShippingRouter.ts
+// apps/api/src/adapters/http/routers/CheckoutShippingRouter.ts
 
 // HTTP adapter for the checkout shipping endpoints:
 //   POST /store/carts/:id/shipping-quotes   -> RetrieveDynamicShippingQuotesUseCase
@@ -41,13 +41,18 @@
 // logged and never echoed into responses.
 
 import express from "express";
-import type { ErrorRequestHandler, Request, Response } from "express";
-import { DomainError } from "@api/domain/entities/errors/DomainError";
+import type { Request, Response } from "express";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import type { ITokenService } from "@api/domain/interfaces/services/ITokenService";
 import type { RetrieveDynamicShippingQuotesUseCase } from "@api/use-cases/checkout/RetrieveDynamicShippingQuotesUseCase";
 import type { SelectShippingOptionUseCase } from "@api/use-cases/checkout/SelectShippingOptionUseCase";
-import { resolveActorFromBearerToken } from "./auth";
+import { resolveActorFromBearerToken } from "../middleware/auth";
+import { assertEmptyRequestBody, parseStrictBodyObject, readRequiredPathId } from "../middleware/body";
+import {
+  createBodyParseErrorHandler,
+  mapDomainErrorToHttp,
+  sendErrorResponse,
+} from "../errors";
 
 const SHIPPING_BODY_LIMIT = "100kb";
 const SELECT_OPTION_BODY_KEYS = ["quoteId"] as const;
@@ -82,7 +87,7 @@ export function createCheckoutShippingRouter(
 
           // The quotes request carries NO body contract. A payload is rejected
           // outright (strict validation) rather than silently ignored.
-          assertEmptyRequestBody(req.body);
+          assertEmptyRequestBody(req.body, "shipping-quotes");
 
           const actorId = await resolveActorFromBearerToken(
             req,
@@ -97,16 +102,13 @@ export function createCheckoutShippingRouter(
 
           res.status(200).json(quotes);
         } catch (err: unknown) {
-          const mapped = mapCheckoutShippingError(err);
+          const mapped = mapDomainErrorToHttp(err);
           deps.logger.warn("Shipping quotes request rejected", {
             status: mapped.status,
             code: mapped.code,
             cartId: req.params.id,
           });
-          res.status(mapped.status).json({
-            success: false,
-            error: { code: mapped.code, message: mapped.message },
-          });
+          sendErrorResponse(res, mapped);
         }
       },
     );
@@ -123,7 +125,11 @@ export function createCheckoutShippingRouter(
         // Body: ONLY the client-selectable application quote id. Financial
         // values (amountMinor, currency) and provider selection data
         // (courierId, serviceCode, requestToken) are rejected outright.
-        const quoteId = parseSelectOptionRequestBody(req.body);
+        const quoteId = parseStrictBodyObject(
+          req.body,
+          SELECT_OPTION_BODY_KEYS,
+          ["quoteId"],
+        ).quoteId as string;
 
         const actorId = await resolveActorFromBearerToken(
           req,
@@ -144,160 +150,20 @@ export function createCheckoutShippingRouter(
           etaDays: result.etaDays ?? null,
         });
       } catch (err: unknown) {
-        const mapped = mapCheckoutShippingError(err);
+        const mapped = mapDomainErrorToHttp(err);
         deps.logger.warn("Shipping option selection rejected", {
           status: mapped.status,
           code: mapped.code,
           cartId: req.params.id,
         });
-        res.status(mapped.status).json({
-          success: false,
-          error: { code: mapped.code, message: mapped.message },
-        });
+        sendErrorResponse(res, mapped);
       }
     },
   );
 
   // express.json errors (malformed body, oversized payload) never reach the
   // route handler; map them to the standard envelope.
-  router.use(bodyParseErrorHandler(deps.logger));
+  router.use(createBodyParseErrorHandler(deps.logger, "Checkout shipping"));
 
   return router;
-}
-
-function readRequiredPathId(value: unknown, name: string): string {
-  const id = typeof value === "string" ? value.trim() : "";
-  if (!id) {
-    throw new DomainError("VALIDATION_ERROR", `${name} is required.`);
-  }
-  return id;
-}
-
-/**
- * The shipping-quotes request has no body contract; a non-empty object is
- * rejected (strict validation) so an unexpected payload can never be ignored.
- */
-function assertEmptyRequestBody(body: unknown): void {
-  if (body === undefined || body === null) {
-    return;
-  }
-  if (typeof body !== "object" || Array.isArray(body)) {
-    throw new DomainError(
-      "VALIDATION_ERROR",
-      "Request body must be a JSON object.",
-    );
-  }
-  const keys = Object.keys(body as Record<string, unknown>);
-  if (keys.length > 0) {
-    throw new DomainError(
-      "VALIDATION_ERROR",
-      "The shipping-quotes request accepts no request body.",
-    );
-  }
-}
-
-/**
- * Validate the request body against the strict SelectShippingOptionRequest
- * contract (only `quoteId`, `additionalProperties: false`). Financial and
- * provider-selection fields are rejected outright. Returns the normalized
- * quoteId and throws VALIDATION_ERROR on malformed input.
- */
-function parseSelectOptionRequestBody(body: unknown): string {
-  if (body === undefined || body === null) {
-    throw new DomainError(
-      "VALIDATION_ERROR",
-      "Request body is required.",
-    );
-  }
-  if (typeof body !== "object" || Array.isArray(body)) {
-    throw new DomainError(
-      "VALIDATION_ERROR",
-      "Request body must be a JSON object.",
-    );
-  }
-  const record = body as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    if (!(SELECT_OPTION_BODY_KEYS as readonly string[]).includes(key)) {
-      throw new DomainError(
-        "VALIDATION_ERROR",
-        `Unexpected field "${key}" in request body.`,
-      );
-    }
-  }
-  const quoteId =
-    typeof record.quoteId === "string" ? record.quoteId.trim() : "";
-  if (!quoteId) {
-    throw new DomainError("VALIDATION_ERROR", "quoteId is required.");
-  }
-  return quoteId;
-}
-
-/**
- * Map a thrown error to the standard error envelope. External infrastructure
- * failures (provider timeouts, unavailability, DB errors) surface as
- * application-level 500s — never as raw provider errors.
- */
-function mapCheckoutShippingError(err: unknown): {
-  status: number;
-  code: string;
-  message: string;
-} {
-  if (err instanceof DomainError) {
-    switch (err.code) {
-      case "VALIDATION_ERROR":
-      case "INVALID_INPUT":
-        return { status: 400, code: err.code, message: err.message };
-      case "UNAUTHORIZED_ACCESS":
-        return { status: 401, code: err.code, message: err.message };
-      case "PERMISSION_DENIED":
-        // Authenticated but the cart belongs to a different customer.
-        return { status: 403, code: err.code, message: err.message };
-      case "CART_NOT_FOUND":
-        return { status: 404, code: err.code, message: err.message };
-      case "INVALID_OPERATION":
-      case "INVALID_STATE":
-        // Conflict: no shipping address, frozen cart, already
-        // initialized/paid/converted, or a stale/unknown quote (re-fetch first).
-        return { status: 409, code: err.code, message: err.message };
-      case "EXTERNAL_SERVICE_TIMEOUT":
-      case "EXTERNAL_SERVICE_UNAVAILABLE":
-      case "EXTERNAL_SERVICE_ERROR":
-      case "INTERNAL_ERROR":
-        return { status: 500, code: err.code, message: err.message };
-      default:
-        return { status: 500, code: err.code, message: err.message };
-    }
-  }
-  return {
-    status: 500,
-    code: "INTERNAL_ERROR",
-    message: "Internal server error.",
-  };
-}
-
-function bodyParseErrorHandler(logger: ILogger): ErrorRequestHandler {
-  return (err: unknown, _req, res, _next) => {
-    const status = isEntityTooLarge(err) ? 413 : 400;
-    logger.warn("Checkout shipping request body rejected", {
-      status,
-      bodyError: isEntityTooLarge(err) ? "too_large" : "unparseable",
-    });
-    res.status(status).json({
-      success: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: isEntityTooLarge(err)
-          ? "Request body too large."
-          : "Request body is not valid JSON.",
-      },
-    });
-  };
-}
-
-function isEntityTooLarge(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { type?: unknown }).type === "entity.too.large"
-  );
 }
