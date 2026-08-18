@@ -140,6 +140,69 @@ HTTP routers. See `apps/api/README.md` for the full write-up. Essentials:
   at **debug** (suppressed under the default `LOG_LEVEL=info`); failures,
   corruption, and invalidation stay at info/warn and remain visible.
 
+### Use-case composition diagnostics (DEV-OBS)
+
+`buildUseCases` (in `apps/api/src/infrastructure/composition/useCases/`) reports
+every constructed (wired) and skipped (unwired) use case at boot, and each
+unwired entry is classified against the runtime being composed. There are FOUR
+statuses — **wired**, **unavailable — missing infrastructure capability**,
+**unavailable — missing configuration**, and **deferred by design**. The
+classification is derived from the ACTUAL composition graph, never hardcoded
+per use case:
+
+- The capability catalog in `useCases/capabilities.ts`
+  (`EXTERNAL_SERVICE_CAPABILITIES`) is the single source of truth for which
+  domain service interfaces have a concrete adapter in the repository and which
+  env var gates construction. **When you add or remove an adapter, update this
+  catalog** or the diagnostics lie.
+- A missing dependency NOT in the catalog (no adapter exists anywhere) is
+  **missing infrastructure capability** in every runtime.
+- An adapter that exists but was not constructed (its config env var is absent)
+  is **missing configuration** in the API runtime.
+- The Worker runtime passes `{ runtime: "worker" }` to `buildUseCases` and wires
+  NO external services by design; use cases that depend on one are **deferred by
+  design** there (they are synchronous API/storefront/admin HTTP flows). The
+  L4/L5 invariant — the worker must never create shipments — is carried as a
+  `note` on `DispatchOrderFulfillmentUseCase`.
+- The API runtime passes `{ runtime: "api" }`; it has no deferred-by-design
+  entries.
+- Worker-level `unavailable` entries (e.g. `NotificationEventWorker`) carry the
+  same vocabulary. `useCaseReportLines()` in `useCases/types.ts` renders both
+  runtimes' `describe()` summaries consistently.
+
+**BullMQ v6 note**: `Worker.run()` resolves only when the worker's main loop
+exits (on close). `QueueWorker.start()` therefore fire-and-forgets `run()` and
+gates on `waitUntilReady()`; it must NEVER `await run()` — that would block
+`WorkerRegistry.startAll()` on the first worker and later workers would never
+start consuming.
+
+### Development console & logging (dev-obs logging)
+
+Local `pnpm dev` runs API (:5000), worker, and storefront (:3000) through Turbo
+(`--ui=tui`; falls back to stream prefixes in non-interactive terminals).
+Both Pino runtimes render **human-readable single-line logs** in development and
+**structured JSON** in production — one logger, one code path:
+
+- `PinoLogger` (the single Pino init site) gains a `pino-pretty` worker-thread
+  **transport** only when `pretty` is set. Redaction is applied by Pino BEFORE
+  the transport, so pretty output masks the same secrets as JSON.
+- The environment distinction is resolved in exactly one place:
+  `resolveLogPretty` in `apps/api/src/infrastructure/composition/config.ts`.
+  `LOG_PRETTY=true` forces pretty, `LOG_PRETTY=false` forces JSON, otherwise
+  pretty only in an interactive non-production terminal. The local `.env` files
+  provisioned by `scripts/prepare-env.mjs` set `LOG_PRETTY=true` (gitignored,
+  overridable in the shell since dotenv never overwrites an existing env var).
+  Never branch on environment elsewhere in the codebase.
+- Runtime identity is logger-level context: each composition root passes
+  `component: "api"` / `"worker"` to `buildInfrastructure`, emitted as a base
+  field and surfaced as a `[api]`/`[worker]` prefix by the pretty transport.
+  No domain entity or use case knows about logging context.
+- `pino-pretty` is a devDependency of `@clothing-line-project/api` only (the
+  package that initializes Pino); it is never a production transport.
+- For a scrollback-friendly, prefix-based Turbo view in place of the TUI, run
+  `pnpm exec turbo run dev --ui=stream` (each line is prefixed with its task,
+  e.g. `api:` / `worker:` / `storefront:`).
+
 ### Worker runtime (`apps/worker`)
 
 The background worker runtime lives in its own package and **imports** the API's

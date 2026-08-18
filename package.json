@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "docker compose up -d --wait && node scripts/prepare-env.mjs && turbo run dev",
+    "dev": "docker compose up -d --wait && node scripts/prepare-env.mjs && turbo run dev --ui=tui",
     "stop": "docker compose down",
     "setup": "node scripts/prepare-env.mjs",
     "clean": "docker compose down -v"

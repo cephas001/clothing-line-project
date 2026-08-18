@@ -60,6 +60,14 @@ export interface AppConfig {
   /** Minimum Pino level to emit. Default: "info". */
   logLevel: Level;
   /**
+   * Whether the Pino transport renders human-readable development output
+   * (pino-pretty) instead of structured JSON. Resolved centrally by
+   * `resolveLogPretty`: LOG_PRETTY=true/false win explicitly, otherwise pretty
+   * only in non-production interactive terminals. Redaction is applied by Pino
+   * BEFORE the transport, so pretty output never exposes redacted fields.
+   */
+  logPretty: boolean;
+  /**
    * Paystack secret key. OPTIONAL here — the Paystack adapter requires it and
    * fails at construction without it; the composition root only builds the
    * adapter when it is present. Absent => payment use cases reported unwired.
@@ -209,6 +217,7 @@ export function loadAppConfig(
     jwtExpiresIn: env.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
     bcryptSaltRounds: parseSaltRounds(env.BCRYPT_SALT_ROUNDS),
     logLevel: parseLogLevel(env.LOG_LEVEL),
+    logPretty: resolveLogPretty(env),
     paystackSecretKey: (env.PAYSTACK_SECRET_KEY ?? "").trim() || undefined,
     paystackWebhookSecret:
       (env.PAYSTACK_WEBHOOK_SECRET ?? "").trim() || undefined,
@@ -457,4 +466,36 @@ function parseLogLevel(raw: string | undefined): Level {
   return (PINO_LEVELS as readonly string[]).includes(candidate)
     ? candidate
     : DEFAULT_LOG_LEVEL;
+}
+
+/**
+ * Resolve whether the Pino transport should render human-readable output.
+ *
+ * Local development is the ONLY environment that should ever be pretty:
+ *   - `LOG_PRETTY=true` forces pretty output. The local-development .env files
+ *     provisioned by scripts/prepare-env.mjs set this so the root `pnpm dev`
+ *     command gets readable logs even though turbo pipes the children's stdout
+ *     (never a TTY). `LOG_PRETTY=false` forces structured JSON everywhere and
+ *     overrides the .env value (dotenv never overrides an existing env var).
+ *   - Otherwise pretty is used only when stdout is an interactive TTY AND the
+ *     process is not production (NODE_ENV !== "production").
+ *
+ * Production deployments therefore keep machine-readable JSON unless an
+ * operator explicitly opts in. This is the single, centralized environment
+ * distinction for logging — nothing else in the codebase branches on it.
+ * The `isTTY` parameter exists so tests can exercise the decision without a
+ * terminal.
+ */
+export function resolveLogPretty(
+  env: NodeJS.ProcessEnv = process.env,
+  isTTY: boolean = process.stdout.isTTY === true,
+): boolean {
+  const raw = (env.LOG_PRETTY ?? "").trim().toLowerCase();
+  if (raw === "true") {
+    return true;
+  }
+  if (raw === "false") {
+    return false;
+  }
+  return env.NODE_ENV !== "production" && isTTY;
 }

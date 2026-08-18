@@ -15,6 +15,12 @@ import "./unit/pricing/PricingRules.test";
 import "./unit/promotions/PromotionRules.test";
 import "./unit/tax/TaxRules.test";
 
+// --- Unit (DEV-OBS: use-case composition diagnostics classification) ---
+import "./unit/composition/UseCaseCompositionDiagnostics.test";
+
+// --- Unit (DEV-OBS logging: dev/prod logger configuration + redaction) ---
+import "./unit/logging/PinoLoggerConfiguration.test";
+
 // --- Unit (L9 Part 26: inventory quantity validation + deterministic sourcing) ---
 import "./unit/inventory/InventoryQuantityValidation.test";
 import "./unit/inventory/DeterministicSourcingSelection.test";
@@ -90,6 +96,7 @@ import "./unit/notifications/MoneyFormatting.test";
 import "./unit/notifications/TemplateRendering.test";
 import "./unit/notifications/ResendNotificationService.test";
 import "./unit/notifications/QueueWorkerBehavior.test";
+import "./unit/notifications/WorkerRegistryLifecycle.test";
 
 // --- Integration (L8 notifications: outbox lifecycle, sweep, atomicity, security) ---
 import "./integration/notifications/NotificationOutboxLifecycle.test";

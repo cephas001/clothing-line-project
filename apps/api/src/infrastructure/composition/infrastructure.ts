@@ -80,10 +80,25 @@ export interface InfrastructureDependencies {
   bullConnection: ConnectionOptions;
 }
 
+export interface BuildInfrastructureOptions {
+  /**
+   * Runtime/component identity attached to every log record ("api" | "worker").
+   * Passed by each composition root so dev output is immediately attributable
+   * to the producing runtime. Logger-level context — no use case or domain
+   * entity needs to know about it.
+   */
+  component?: string;
+}
+
 export function buildInfrastructure(
   config: AppConfig,
+  options: BuildInfrastructureOptions = {},
 ): InfrastructureDependencies {
-  const logger = new PinoLogger({ level: config.logLevel });
+  const logger = new PinoLogger({
+    level: config.logLevel,
+    pretty: config.logPretty,
+    component: options.component,
+  });
   const idGenerator = new NodeIdGenerator();
   const hashingService = new BcryptHashingService({
     saltRounds: config.bcryptSaltRounds,
