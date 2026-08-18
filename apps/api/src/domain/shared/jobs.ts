@@ -5,7 +5,16 @@ import {
   LogisticsProvider,
   PROVIDER_LOGISTICS_EVENT_TYPES,
   ProviderLogisticsEventType,
+  PaymentAmountBreakdown,
 } from "@api/domain/shared/contracts";
+import { CourierTrackingState } from "@api/domain/shared/trackingStateMachine";
+import {
+  notificationAggregateId,
+  type NotificationIntent,
+  type NotificationOrderLine,
+  type NotificationRecipient,
+  type OrderNotificationContext,
+} from "@api/domain/shared/notifications";
 
 /**
  * Authoritative queue names for the background-job queues this application
@@ -17,6 +26,7 @@ export const QUEUE_NAMES = {
   paymentEvents: "payment-events-queue",
   bulkCatalogImport: "bulk-import-queue",
   logisticsEvents: "logistics-events-queue",
+  notificationEvents: "notification-events-queue",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -374,4 +384,466 @@ export function parseLogisticsEventJobPayload(
     status,
     occurredAt,
   };
+}
+
+const NOTIFICATION_INTENT_TYPES: readonly NotificationIntent["type"][] = [
+  "payment_confirmation",
+  "shipment_dispatched",
+  "tracking_update",
+  "refund_issued",
+  "password_reset",
+  "quote_approved",
+  "draft_order_invoice",
+];
+
+/**
+ * Typed job payload for `notification-events-queue`, produced by
+ * `EnqueuePendingNotificationsUseCase` from durable notification outbox rows.
+ *
+ * The payload wraps the provider-neutral `NotificationIntent` (the full,
+ * self-contained notification the worker relays to the concrete notification
+ * provider) plus the durable outbox record id, which the notification worker
+ * uses to mark the row dispatched or failed — never a provider raw identity or
+ * any provider secret.
+ *
+ * `enqueuedAt` is the ISO-8601 enqueue timestamp, carried for traceability and
+ * for bounded-at-least-once reconciliation of stuck rows.
+ */
+export interface NotificationEventJobPayload {
+  /** Durable notification outbox record id the worker must reconcile. */
+  outboxRecordId: string;
+  /** Provider-neutral notification intent (full payload; no secrets). */
+  intent: NotificationIntent;
+  /** ISO-8601 enqueue time, for traceability. */
+  enqueuedAt: string;
+}
+
+function requiredNonNegativeInteger(value: unknown, field: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field '${field}' must be a non-negative integer.`,
+    );
+  }
+  return value;
+}
+
+function requiredEmail(value: unknown, field: string): string {
+  const email = requiredString(value, field);
+  if (!email.includes("@")) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field '${field}' must be a valid email address.`,
+    );
+  }
+  return email;
+}
+
+function requiredTimestamp(value: unknown, field: string): string {
+  const timestamp = requiredString(value, field);
+  if (Number.isNaN(Date.parse(timestamp))) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field '${field}' must be a valid date string.`,
+    );
+  }
+  return timestamp;
+}
+
+function parseRecipient(value: unknown): NotificationRecipient {
+  if (!isRecord(value)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Notification intent 'recipient' must be an object.",
+    );
+  }
+  const email = requiredEmail(value.email, "intent.payload.recipient.email");
+  const name = optionalString(value.name, "intent.payload.recipient.name");
+  const phone = optionalString(value.phone, "intent.payload.recipient.phone");
+  return { email, name, phone };
+}
+
+function parseOrderNotificationContext(value: unknown): OrderNotificationContext {
+  if (!isRecord(value)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Notification intent 'order' context must be an object.",
+    );
+  }
+  const orderId = requiredString(value.orderId, "intent.payload.order.orderId");
+  const cartId = requiredString(value.cartId, "intent.payload.order.cartId");
+  const customerId = requiredString(
+    value.customerId,
+    "intent.payload.order.customerId",
+  );
+  const currency = optionalString(value.currency, "intent.payload.order.currency");
+  const createdAt = requiredTimestamp(
+    value.createdAt,
+    "intent.payload.order.createdAt",
+  );
+  return { orderId, cartId, customerId, currency, createdAt };
+}
+
+function parseNotificationOrderLine(value: unknown): NotificationOrderLine {
+  if (!isRecord(value)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Notification intent 'lineItems' entries must be objects.",
+    );
+  }
+  const id = requiredString(value.id, "intent.payload.lineItems.id");
+  const variantId = optionalString(
+    value.variantId,
+    "intent.payload.lineItems.variantId",
+  );
+  const quantity = requiredNonNegativeInteger(
+    value.quantity,
+    "intent.payload.lineItems.quantity",
+  );
+  const unitPriceMinor = requiredNonNegativeInteger(
+    value.unitPriceMinor,
+    "intent.payload.lineItems.unitPriceMinor",
+  );
+  const title = optionalString(value.title, "intent.payload.lineItems.title");
+  return { id, variantId, quantity, unitPriceMinor, title };
+}
+
+function parsePaymentAmountBreakdown(value: unknown): PaymentAmountBreakdown {
+  if (!isRecord(value)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Notification intent 'breakdown' must be an object.",
+    );
+  }
+  const subtotalMinor = requiredNonNegativeInteger(
+    value.subtotalMinor,
+    "intent.payload.breakdown.subtotalMinor",
+  );
+  const discountMinor = requiredNonNegativeInteger(
+    value.discountMinor,
+    "intent.payload.breakdown.discountMinor",
+  );
+  const taxMinor = requiredNonNegativeInteger(
+    value.taxMinor,
+    "intent.payload.breakdown.taxMinor",
+  );
+  const shippingMinor = requiredNonNegativeInteger(
+    value.shippingMinor,
+    "intent.payload.breakdown.shippingMinor",
+  );
+  const insuranceMinor = requiredNonNegativeInteger(
+    value.insuranceMinor,
+    "intent.payload.breakdown.insuranceMinor",
+  );
+  const totalMinor = requiredNonNegativeInteger(
+    value.totalMinor,
+    "intent.payload.breakdown.totalMinor",
+  );
+  return {
+    subtotalMinor,
+    discountMinor,
+    taxMinor,
+    shippingMinor,
+    insuranceMinor,
+    totalMinor,
+  };
+}
+
+const COURIER_TRACKING_STATES: readonly CourierTrackingState[] = [
+  "in_transit",
+  "out_for_delivery",
+  "delivered",
+  "delivery_failed",
+];
+
+/**
+ * Validate an opaque job payload against the `NotificationEventJobPayload`
+ * contract. A malformed payload is a permanent failure (retrying cannot fix
+ * it), so the parser rejects it with a `VALIDATION_ERROR` DomainError before
+ * any worker invokes a use case.
+ *
+ * Every field of the wrapped `NotificationIntent` is validated against the
+ * provider-neutral contract: financial values as non-negative integers and the
+ * recipient as a structurally valid email, mirroring the producer-side
+ * guarantee that provider recipients and amounts never come from an HTTP or
+ * webhook body.
+ */
+export function parseNotificationEventJobPayload(
+  value: unknown,
+): NotificationEventJobPayload {
+  if (!isRecord(value)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Notification event job payload must be an object.",
+    );
+  }
+
+  const outboxRecordId = requiredString(value.outboxRecordId, "outboxRecordId");
+  const enqueuedAt = requiredTimestamp(value.enqueuedAt, "enqueuedAt");
+
+  if (!isRecord(value.intent)) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Notification event job payload field 'intent' must be an object.",
+    );
+  }
+  const type = requiredString(value.intent.type, "intent.type");
+  if (!NOTIFICATION_INTENT_TYPES.includes(type as NotificationIntent["type"])) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field 'intent.type' is not a known notification intent type; received "${type}".`,
+    );
+  }
+
+  const payload = isRecord(value.intent.payload)
+    ? value.intent.payload
+    : {};
+  const recipient = parseRecipient(payload.recipient);
+
+  let intent: NotificationIntent;
+  switch (type as NotificationIntent["type"]) {
+    case "payment_confirmation": {
+      intent = {
+        type: "payment_confirmation",
+        payload: {
+          recipient,
+          order: parseOrderNotificationContext(payload.order),
+          transactionReference: requiredString(
+            payload.transactionReference,
+            "intent.payload.transactionReference",
+          ),
+          breakdown: parsePaymentAmountBreakdown(payload.breakdown),
+          paidAt: requiredTimestamp(payload.paidAt, "intent.payload.paidAt"),
+          lineItems: Array.isArray(payload.lineItems)
+            ? payload.lineItems.map(parseNotificationOrderLine)
+            : [],
+        },
+      };
+      break;
+    }
+    case "shipment_dispatched": {
+      intent = {
+        type: "shipment_dispatched",
+        payload: {
+          recipient,
+          order: parseOrderNotificationContext(payload.order),
+          fulfillmentId: requiredString(
+            payload.fulfillmentId,
+            "intent.payload.fulfillmentId",
+          ),
+          providerShipmentId: requiredString(
+            payload.providerShipmentId,
+            "intent.payload.providerShipmentId",
+          ),
+          trackingNumber: requiredString(
+            payload.trackingNumber,
+            "intent.payload.trackingNumber",
+          ),
+          courier: optionalString(payload.courier, "intent.payload.courier"),
+          serviceLevel: optionalString(
+            payload.serviceLevel,
+            "intent.payload.serviceLevel",
+          ),
+          labelUrl: optionalString(payload.labelUrl, "intent.payload.labelUrl"),
+          dispatchedAt: requiredTimestamp(
+            payload.dispatchedAt,
+            "intent.payload.dispatchedAt",
+          ),
+        },
+      };
+      break;
+    }
+    case "tracking_update": {
+      const status = requiredString(payload.status, "intent.payload.status");
+      if (!COURIER_TRACKING_STATES.includes(status as CourierTrackingState)) {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          `Job payload field 'intent.payload.status' is not a known courier tracking state; received "${status}".`,
+        );
+      }
+      const occurredAt = optionalString(
+        payload.occurredAt,
+        "intent.payload.occurredAt",
+      );
+      if (occurredAt !== null && Number.isNaN(Date.parse(occurredAt))) {
+        throw new DomainError(
+          "VALIDATION_ERROR",
+          "Job payload field 'intent.payload.occurredAt' must be a valid date string.",
+        );
+      }
+      intent = {
+        type: "tracking_update",
+        payload: {
+          recipient,
+          order: parseOrderNotificationContext(payload.order),
+          fulfillmentId: requiredString(
+            payload.fulfillmentId,
+            "intent.payload.fulfillmentId",
+          ),
+          trackingNumber: optionalString(
+            payload.trackingNumber,
+            "intent.payload.trackingNumber",
+          ),
+          courier: optionalString(payload.courier, "intent.payload.courier"),
+          status: status as CourierTrackingState,
+          occurredAt,
+        },
+      };
+      break;
+    }
+    case "refund_issued": {
+      const money = isRecord(payload.money) ? payload.money : {};
+      const amountMinor = requiredNonNegativeInteger(
+        money.amountMinor,
+        "intent.payload.money.amountMinor",
+      );
+      const currency = requiredString(
+        money.currency,
+        "intent.payload.money.currency",
+      );
+      intent = {
+        type: "refund_issued",
+        payload: {
+          recipient,
+          order: parseOrderNotificationContext(payload.order),
+          refundId: requiredString(payload.refundId, "intent.payload.refundId"),
+          refundReference: requiredString(
+            payload.refundReference,
+            "intent.payload.refundReference",
+          ),
+          providerRefundReference: optionalString(
+            payload.providerRefundReference,
+            "intent.payload.providerRefundReference",
+          ),
+          money: { currency, amountMinor },
+          reason: optionalString(payload.reason, "intent.payload.reason"),
+          issuedAt: requiredTimestamp(payload.issuedAt, "intent.payload.issuedAt"),
+        },
+      };
+      break;
+    }
+    case "password_reset": {
+      intent = {
+        type: "password_reset",
+        payload: {
+          recipient,
+          customerId: requiredString(
+            payload.customerId,
+            "intent.payload.customerId",
+          ),
+          token: requiredString(payload.token, "intent.payload.token"),
+          expiresInSeconds: requiredNonNegativeInteger(
+            payload.expiresInSeconds,
+            "intent.payload.expiresInSeconds",
+          ),
+          requestedAt: requiredTimestamp(
+            payload.requestedAt,
+            "intent.payload.requestedAt",
+          ),
+        },
+      };
+      break;
+    }
+    case "quote_approved": {
+      intent = {
+        type: "quote_approved",
+        payload: {
+          recipient,
+          quoteId: requiredString(payload.quoteId, "intent.payload.quoteId"),
+          businessUnitId: requiredString(
+            payload.businessUnitId,
+            "intent.payload.businessUnitId",
+          ),
+          approvedTotalMinor: requiredNonNegativeInteger(
+            payload.approvedTotalMinor,
+            "intent.payload.approvedTotalMinor",
+          ),
+          currency: optionalString(
+            payload.currency,
+            "intent.payload.currency",
+          ),
+          approvedBy: requiredString(
+            payload.approvedBy,
+            "intent.payload.approvedBy",
+          ),
+          approvedAt: requiredTimestamp(
+            payload.approvedAt,
+            "intent.payload.approvedAt",
+          ),
+          note: optionalString(payload.note, "intent.payload.note"),
+        },
+      };
+      break;
+    }
+    case "draft_order_invoice": {
+      intent = {
+        type: "draft_order_invoice",
+        payload: {
+          recipient,
+          draftOrderId: requiredString(
+            payload.draftOrderId,
+            "intent.payload.draftOrderId",
+          ),
+          totalMinor: requiredNonNegativeInteger(
+            payload.totalMinor,
+            "intent.payload.totalMinor",
+          ),
+          currency: optionalString(
+            payload.currency,
+            "intent.payload.currency",
+          ),
+          itemCount: requiredNonNegativeInteger(
+            payload.itemCount,
+            "intent.payload.itemCount",
+          ),
+          createdAt: requiredTimestamp(
+            payload.createdAt,
+            "intent.payload.createdAt",
+          ),
+        },
+      };
+      break;
+    }
+  }
+
+  return { outboxRecordId, intent, enqueuedAt };
+}
+
+/**
+ * Deterministic queue jobId for one logical notification, built from the
+ * provider-neutral intent. Job ids are stable across retries and duplicate
+ * deliveries, so BullMQ collapses duplicate enqueues onto the same job (while
+ * the job exists) and the outbox sweep can never double-enqueue the same
+ * logical notification twice.
+ *
+ * Shape: `notification:<eventType>:<aggregateId>[:<discriminator>]`.
+ * The discriminator is the per-occurrence identity for intents that fire more
+ * than once per aggregate (e.g. a courier `tracking_update` keyed by eventKey),
+ * and null/omitted for intents that fire at most once per aggregate (e.g. a
+ * payment_confirmation for one order).
+ */
+export function buildNotificationJobId(
+  intent: NotificationIntent,
+  discriminator?: string | null,
+): string {
+  const base = `notification:${intent.type}:${sanitizeJobKey(
+    notificationAggregateId(intent),
+  )}`;
+  const disc = discriminator && discriminator.trim().length > 0 ? discriminator : null;
+  return disc ? `${base}:${sanitizeJobKey(disc)}` : base;
+}
+
+function sanitizeJobKey(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      "Cannot build a notification job id from an empty key segment.",
+    );
+  }
+  return trimmed.replace(/[^a-zA-Z0-9._-]/g, "-");
 }

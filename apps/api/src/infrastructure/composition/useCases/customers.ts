@@ -18,7 +18,7 @@ import { RevokeCustomerSessionUseCase } from "@api/use-cases/customers/RevokeCus
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface CustomersUseCases {
-  approveB2BQuote?: ApproveB2BQuoteUseCase;
+  approveB2BQuote: ApproveB2BQuoteUseCase;
   authenticateCustomer: AuthenticateCustomerUseCase;
   completePasswordReset: CompletePasswordResetUseCase;
   initiatePasswordReset?: InitiatePasswordResetUseCase;
@@ -111,20 +111,28 @@ export function buildCustomersUseCases(
     logger,
   );
 
-  const notificationService = deps.externalServices?.notificationService;
-  let approveB2BQuote: ApproveB2BQuoteUseCase | undefined;
-  if (notificationService) {
-    approveB2BQuote = new ApproveB2BQuoteUseCase(
-      deps.quoteRepository,
-      notificationService,
-      auditLogService,
-      idGenerator,
-      logger,
-    );
-  } else {
-    report.unwiredUseCase("ApproveB2BQuoteUseCase", "INotificationService");
-  }
+  // --- B2B quote approval (L8 PART 3: outbox-migrated) -----------------------
+  // Always wired: the quote_approved intent is appended to the notification
+  // outbox inside the same transaction as the quote save, then relayed to the
+  // queue AFTER commit by EnqueuePendingNotificationsUseCase. It no longer
+  // depends on a live INotificationService.
+  const approveB2BQuote = new ApproveB2BQuoteUseCase(
+    deps.quoteRepository,
+    deps.customerRepository,
+    transactionManager,
+    deps.notificationOutboxRepository,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
 
+  // --- Password reset initiation (L8 PART 3: direct-sync RETAINED) ----------
+  // Deliberately NOT outbox-migrated: the notification carries the RAW
+  // single-use reset token, which the adapter needs to render the reset link
+  // and which is not retrievable after hashing. Persisting it would store a
+  // credential in the async pipeline — a security risk. Wired only when a live
+  // INotificationService is present.
+  const notificationService = deps.externalServices?.notificationService;
   let initiatePasswordReset: InitiatePasswordResetUseCase | undefined;
   if (notificationService) {
     initiatePasswordReset = new InitiatePasswordResetUseCase(
@@ -152,6 +160,7 @@ export function buildCustomersUseCases(
     "RequestQuoteUseCase",
     "RetrieveOrderHistoryUseCase",
     "RevokeCustomerSessionUseCase",
+    "ApproveB2BQuoteUseCase",
   );
 
   return {

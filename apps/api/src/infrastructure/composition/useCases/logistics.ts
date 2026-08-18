@@ -6,13 +6,11 @@
 //
 // NOTE: ProcessCourierTrackingEventUseCase (the consumer the
 // LogisticsEventWorker routes tracking events through) is always wired — it
-// depends only on repositories/core dependencies. Its notification service is
-// OPTIONAL and injected only when a concrete INotificationService is supplied;
-// without one, customer notifications are skipped (best-effort) and the use
-// case still persists fulfillment state.
+// depends only on repositories/core dependencies. Its tracking notifications
+// are appended to the notification outbox inside the business transaction
+// (L8 PART 8/9) and relayed to the queue after commit.
 
 import { ConfirmOrderEditUseCase } from "@api/use-cases/logistics/ConfirmOrderEditUseCase";
-import { DetermineSourcingLocationUseCase } from "@api/use-cases/logistics/DetermineSourcingLocationUseCase";
 import { DispatchOrderFulfillmentUseCase } from "@api/use-cases/logistics/DispatchOrderFulfillmentUseCase";
 import { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
 import { GenerateDraftOrderUseCase } from "@api/use-cases/logistics/GenerateDraftOrderUseCase";
@@ -23,14 +21,15 @@ import { ProposeOrderEditUseCase } from "@api/use-cases/logistics/ProposeOrderEd
 import { QueueLogisticsEventUseCase } from "@api/use-cases/logistics/QueueLogisticsEventUseCase";
 import { VerifyLogisticsEventSignatureUseCase } from "@api/use-cases/logistics/VerifyLogisticsEventSignatureUseCase";
 import { VerifySwapPaymentEventUseCase } from "@api/use-cases/logistics/VerifySwapPaymentEventUseCase";
+import { ConfirmInventoryReservationUseCase } from "@api/use-cases/inventory/ConfirmInventoryReservationUseCase";
+import { ReserveInventoryUseCase } from "@api/use-cases/inventory/ReserveInventoryUseCase";
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface LogisticsUseCases {
   confirmOrderEdit: ConfirmOrderEditUseCase;
-  determineSourcingLocation?: DetermineSourcingLocationUseCase;
   dispatchOrderFulfillment?: DispatchOrderFulfillmentUseCase;
   finalizeSwapTransaction: FinalizeSwapTransactionUseCase;
-  generateDraftOrder?: GenerateDraftOrderUseCase;
+  generateDraftOrder: GenerateDraftOrderUseCase;
   initiateReturnAuthorization?: InitiateReturnAuthorizationUseCase;
   processCourierTrackingEvent: ProcessCourierTrackingEventUseCase;
   processOrderSwapVariance?: ProcessOrderSwapVarianceUseCase;
@@ -63,23 +62,6 @@ export function buildLogisticsUseCases(
     transactionManager,
   );
 
-  const inventoryLocationService =
-    deps.externalServices?.inventoryLocationService;
-  let determineSourcingLocation: DetermineSourcingLocationUseCase | undefined;
-  if (inventoryLocationService) {
-    determineSourcingLocation = new DetermineSourcingLocationUseCase(
-      inventoryLocationService,
-      auditLogService,
-      idGenerator,
-      logger,
-    );
-  } else {
-    report.unwiredUseCase(
-      "DetermineSourcingLocationUseCase",
-      "IInventoryLocationService",
-    );
-  }
-
   const logisticsService = deps.externalServices?.logisticsService;
   let dispatchOrderFulfillment: DispatchOrderFulfillmentUseCase | undefined;
   if (logisticsService) {
@@ -91,6 +73,7 @@ export function buildLogisticsUseCases(
       idGenerator,
       logger,
       transactionManager,
+      deps.notificationOutboxRepository,
     );
   } else {
     report.unwiredUseCase(
@@ -99,20 +82,19 @@ export function buildLogisticsUseCases(
     );
   }
 
-  const notificationService = deps.externalServices?.notificationService;
-  let generateDraftOrder: GenerateDraftOrderUseCase | undefined;
-  if (notificationService) {
-    generateDraftOrder = new GenerateDraftOrderUseCase(
-      deps.draftOrderRepository,
-      notificationService,
-      auditLogService,
-      idGenerator,
-      logger,
-      transactionManager,
-    );
-  } else {
-    report.unwiredUseCase("GenerateDraftOrderUseCase", "INotificationService");
-  }
+  // --- Draft-order generation (L8 PART 3: outbox-migrated) -------------------
+  // Always wired: the invoice intent is appended to the notification outbox
+  // inside the same transaction as the draft order save, then relayed to the
+  // queue AFTER commit by EnqueuePendingNotificationsUseCase. It no longer
+  // depends on a live INotificationService.
+  const generateDraftOrder = new GenerateDraftOrderUseCase(
+    deps.draftOrderRepository,
+    deps.notificationOutboxRepository,
+    auditLogService,
+    idGenerator,
+    logger,
+    transactionManager,
+  );
 
   let initiateReturnAuthorization:
     | InitiateReturnAuthorizationUseCase
@@ -135,8 +117,32 @@ export function buildLogisticsUseCases(
   }
 
   const paymentService = deps.externalServices?.paymentService;
+  const pricingService = deps.externalServices?.pricingService;
+
+  // The swap flows hold and confirm replacement inventory through the SAME L9
+  // reservation ledger the checkout flow uses (INV-I1..INV-I7), so the two
+  // inventory orchestration use cases are composed here as well. Instances are
+  // stateless, so the duplication with buildCheckoutUseCases is harmless.
+  const reserveInventory = new ReserveInventoryUseCase(
+    deps.inventoryLocationRepository,
+    deps.inventoryLevelRepository,
+    deps.inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const confirmInventoryReservation = new ConfirmInventoryReservationUseCase(
+    deps.inventoryLevelRepository,
+    deps.inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+
   let processOrderSwapVariance: ProcessOrderSwapVarianceUseCase | undefined;
-  if (paymentService) {
+  if (paymentService && pricingService) {
     processOrderSwapVariance = new ProcessOrderSwapVarianceUseCase(
       deps.orderRepository,
       deps.cartRepository,
@@ -149,12 +155,14 @@ export function buildLogisticsUseCases(
       logger,
       transactionManager,
       deps.customerRepository,
-      deps.moneyAmountRepository,
+      pricingService,
+      deps.notificationOutboxRepository,
+      reserveInventory,
     );
   } else {
     report.unwiredUseCase(
       "ProcessOrderSwapVarianceUseCase",
-      "IPaymentService",
+      paymentService ? "IPricingService" : "IPaymentService",
     );
   }
 
@@ -172,16 +180,17 @@ export function buildLogisticsUseCases(
   // --- Courier tracking event consumer (L5 worker) ---------------------------
   // Always wired: it resolves fulfillment by providerShipmentId, applies the
   // courier tracking + dispatch state machines, and persists via
-  // ITransactionManager. The notification service is OPTIONAL — absent, the
-  // customer notification is skipped (best-effort) and fulfillment state is
-  // still persisted.
+  // ITransactionManager. Tracking notifications are appended to the
+  // notification outbox inside the same transaction (L8 PART 8/9) — order
+  // lookup + outbox repository are therefore always injected.
   const processCourierTrackingEvent = new ProcessCourierTrackingEventUseCase(
     deps.fulfillmentRepository,
     transactionManager,
     auditLogService,
     idGenerator,
     logger,
-    deps.externalServices?.notificationService,
+    deps.orderRepository,
+    deps.notificationOutboxRepository,
   );
 
   // --- Logistics webhook pipeline (L5): signature verification + queueing ----
@@ -207,11 +216,11 @@ export function buildLogisticsUseCases(
     deps.orderRepository,
     deps.paymentRepository,
     deps.transactionRepository,
-    deps.variantRepository,
     auditLogService,
     idGenerator,
     logger,
     transactionManager,
+    confirmInventoryReservation,
   );
 
   report.wiredUseCases(
@@ -222,11 +231,11 @@ export function buildLogisticsUseCases(
     "VerifyLogisticsEventSignatureUseCase",
     "QueueLogisticsEventUseCase",
     "ProcessCourierTrackingEventUseCase",
+    "GenerateDraftOrderUseCase",
   );
 
   return {
     confirmOrderEdit,
-    determineSourcingLocation,
     dispatchOrderFulfillment,
     finalizeSwapTransaction,
     generateDraftOrder,

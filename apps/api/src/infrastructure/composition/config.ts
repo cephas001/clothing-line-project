@@ -121,6 +121,45 @@ export interface AppConfig {
    * height: 10 }.
    */
   shipbubbleDefaultPackageDimensions: ShipbubblePackageDimensionsConfig;
+  /**
+   * Notification provider name. Only "resend" is supported today; an unknown
+   * explicit value fails fast. Default: "resend".
+   */
+  notificationProvider: string;
+  /**
+   * Notification provider API key. OPTIONAL here — the Resend adapter requires
+   * it and fails at construction without it; the composition root only builds
+   * the adapter when it is present. Absent => notification intents reported
+   * unwired. NEVER defaulted, NEVER logged.
+   */
+  notificationApiKey?: string;
+  /**
+   * Notification provider API base URL. Default: https://api.resend.com
+   * (HTTPS enforced by the adapter).
+   */
+  notificationBaseUrl: string;
+  /** Per-request notification timeout in milliseconds. Default: 10000. */
+  notificationTimeoutMs: number;
+  /**
+   * Authoritative sender address. REQUIRED when NOTIFICATION_API_KEY is
+   * present — the composition root fails fast if the key is set but the
+   * from-email is missing (mirrors the Shipbubble sender-address policy).
+   */
+  notificationFromEmail?: string;
+  /** Optional sender display name (NOTIFICATION_FROM_NAME). */
+  notificationFromName?: string | null;
+  /**
+   * Base URL used to build the single-use password-reset link in the
+   * password-reset email (e.g. "https://shop.example.com/reset-password?token=").
+   * Absent => the reset email renders the raw token instead of a link.
+   */
+  notificationPasswordResetUrl?: string | null;
+  /**
+   * TTL (seconds) for cached product catalog reads (the
+   * CachedProductReadRepository decorator). Default: 60. A short TTL bounds how
+   * stale a cached listing/detail can be; Postgres stays the source of truth.
+   */
+  productCacheTtlSeconds: number;
 }
 
 const DEFAULT_PORT = 5000;
@@ -138,6 +177,11 @@ const DEFAULT_SHIPBUBBLE_DIMENSIONS: ShipbubblePackageDimensionsConfig = {
   width: 10,
   height: 10,
 };
+const DEFAULT_NOTIFICATION_PROVIDER = "resend";
+const DEFAULT_NOTIFICATION_BASE_URL = "https://api.resend.com";
+const DEFAULT_NOTIFICATION_TIMEOUT_MS = 10_000;
+const DEFAULT_PRODUCT_CACHE_TTL_SECONDS = 60;
+const SUPPORTED_NOTIFICATION_PROVIDERS: readonly string[] = ["resend"];
 
 const PINO_LEVELS: readonly Level[] = [
   "trace",
@@ -188,6 +232,25 @@ export function loadAppConfig(
     ),
     shipbubbleDefaultPackageDimensions: parseShipbubbleDimensions(
       env.SHIPBUBBLE_DEFAULT_PACKAGE_DIMENSIONS,
+    ),
+    notificationProvider: parseNotificationProvider(
+      env.NOTIFICATION_PROVIDER,
+    ),
+    notificationApiKey: (env.NOTIFICATION_API_KEY ?? "").trim() || undefined,
+    notificationBaseUrl:
+      (env.NOTIFICATION_BASE_URL ?? "").trim() ||
+      DEFAULT_NOTIFICATION_BASE_URL,
+    notificationTimeoutMs: parseNotificationTimeout(
+      env.NOTIFICATION_TIMEOUT_MS,
+    ),
+    notificationFromEmail:
+      (env.NOTIFICATION_FROM_EMAIL ?? "").trim() || undefined,
+    notificationFromName: optionalTrimmedString(env.NOTIFICATION_FROM_NAME),
+    notificationPasswordResetUrl: optionalTrimmedString(
+      env.NOTIFICATION_PASSWORD_RESET_URL,
+    ),
+    productCacheTtlSeconds: parseProductCacheTtlSeconds(
+      env.PRODUCT_CACHE_TTL_SECONDS,
     ),
   };
 }
@@ -318,6 +381,54 @@ function parseShipbubbleDimensions(
     );
   }
   return { length, width, height };
+}
+
+/** Absent NOTIFICATION_TIMEOUT_MS uses the default; an explicit invalid value fails fast. */
+function parseNotificationTimeout(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_NOTIFICATION_TIMEOUT_MS;
+  }
+  const timeout = Number(raw);
+  if (!Number.isInteger(timeout) || timeout <= 0) {
+    throw new Error(
+      `NOTIFICATION_TIMEOUT_MS must be a positive integer of milliseconds; received "${raw}".`,
+    );
+  }
+  return timeout;
+}
+
+/** Absent NOTIFICATION_PROVIDER uses "resend"; an unknown explicit value fails fast. */
+function parseNotificationProvider(raw: string | undefined): string {
+  const provider = (raw ?? "").trim().toLowerCase() || DEFAULT_NOTIFICATION_PROVIDER;
+  if (!(SUPPORTED_NOTIFICATION_PROVIDERS as readonly string[]).includes(provider)) {
+    throw new Error(
+      `NOTIFICATION_PROVIDER must be one of: ${SUPPORTED_NOTIFICATION_PROVIDERS.join(", ")}; received "${raw}".`,
+    );
+  }
+  return provider;
+}
+
+/** Absent or empty value -> undefined (allows clearing a nullable field). */
+function optionalTrimmedString(raw: string | undefined): string | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Absent PRODUCT_CACHE_TTL_SECONDS uses 60s; an explicit invalid value fails fast. */
+function parseProductCacheTtlSeconds(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_PRODUCT_CACHE_TTL_SECONDS;
+  }
+  const ttl = Number(raw);
+  if (!Number.isInteger(ttl) || ttl < 1) {
+    throw new Error(
+      `PRODUCT_CACHE_TTL_SECONDS must be a positive integer of seconds; received "${raw}".`,
+    );
+  }
+  return ttl;
 }
 
 /** Absent PORT uses the development default; an explicit invalid value fails fast. */

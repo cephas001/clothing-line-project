@@ -5,9 +5,12 @@
 // Emits structured JSON logs suitable for production ingestion. Every ILogger
 // call maps 1:1 onto a Pino log record: the message becomes `msg` and the
 // optional StructuredMeta is passed through as structured fields — never as
-// string interpolation. Pino's native error serialization preserves `name`,
-// `message`, `stack` (and enumerable props such as `code`) for Error values,
-// so errors are never rendered as `[object Object]`.
+// string interpolation. `debug` maps to Pino's `debug` level and is therefore
+// SUPPRESSED by the default "info" threshold (LOG_LEVEL) — routine low-signal
+// telemetry (e.g. product read cache hits/misses) lives at debug on purpose.
+// Pino's native error serialization preserves `name`, `message`, `stack` (and
+// enumerable props such as `code`) for Error values, so errors are never
+// rendered as `[object Object]`.
 //
 // Redaction: a conservative default path list masks common secrets
 // (passwords, tokens, authorization headers, API keys, payment credentials)
@@ -92,6 +95,15 @@ export class PinoLogger implements ILogger {
       base: options.base,
       redact: options.redact ?? DEFAULT_REDACT,
     });
+  }
+
+  debug(message: string, meta?: StructuredMeta): void {
+    const enriched = this.enrichWithTraceContext(meta);
+    if (enriched) {
+      this.logger.debug(this.serializeMeta(enriched), message);
+    } else {
+      this.logger.debug(message);
+    }
   }
 
   info(message: string, meta?: StructuredMeta): void {

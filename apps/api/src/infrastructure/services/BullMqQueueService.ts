@@ -49,7 +49,7 @@ import type {
   JobsOptions,
 } from "bullmq";
 import type { IQueueService } from "@api/domain/interfaces/services/IQueueService";
-import type { QueueJobOptions } from "@api/domain/interfaces/services/IQueueService";
+import type { QueueJobOptions, QueueJobState } from "@api/domain/interfaces/services/IQueueService";
 import { toRedisRepositoryError } from "@api/infrastructure/redis/errors";
 import type { JsonValue } from "@api/domain/shared/json";
 import type { DeadLetterJob } from "@api/domain/shared/workflow";
@@ -102,6 +102,19 @@ export class BullMqQueueService implements IQueueService {
       queue.getJobs(["failed"], offset, offset + limit - 1),
     );
     return jobs.map(toDeadLetterJob);
+  }
+
+  async getJobState(
+    queueName: string,
+    jobId: string,
+  ): Promise<QueueJobState | null> {
+    const queue = this.getQueue(queueName);
+    const job = await this.run(() => queue.getJob(jobId));
+    if (!job) {
+      return null;
+    }
+    const state = await this.run(() => job.getState());
+    return state as QueueJobState;
   }
 
   async retryJob(queueName: string, jobId: string): Promise<boolean> {

@@ -2,13 +2,18 @@
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IDraftOrderRepository } from "@api/domain/interfaces/repositories/IDraftOrderRepository";
-import { INotificationService } from "@api/domain/interfaces/services/INotificationService";
+import { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
+import { NotificationIntent } from "@api/domain/shared/notifications";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
 import { JsonObject } from "@api/domain/shared/json";
 import { DraftOrderRecord } from "@api/domain/shared/contracts";
+import {
+  toNonNegativeMinorUnits,
+  toPositiveQuantity,
+} from "@api/utils/moneyUtils";
 import {
   RepositoryError,
   RepositoryErrorCode,
@@ -31,7 +36,7 @@ export class GenerateDraftOrderUseCase {
 
   constructor(
     private readonly draftOrderRepository: IDraftOrderRepository,
-    private readonly notificationService: INotificationService,
+    private readonly notificationOutboxRepository: INotificationOutboxRepository,
     private readonly auditLogService: IAuditLogService,
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
@@ -73,6 +78,11 @@ export class GenerateDraftOrderUseCase {
     }
 
     // Validate each item
+    const validatedItems: Array<{
+      title: string;
+      quantity: number;
+      unitPriceMinor: number;
+    }> = [];
     for (const [idx, item] of items.entries()) {
       if (!item || typeof item !== "object") {
         throw new DomainError(
@@ -86,20 +96,15 @@ export class GenerateDraftOrderUseCase {
           `Item at index ${idx} must have a title.`,
         );
       }
-      const qty = Number(item.quantity);
-      const price = Number(item.unitPriceMinor);
-      if (!Number.isFinite(qty) || qty <= 0) {
-        throw new DomainError(
-          "VALIDATION_ERROR",
-          `Item at index ${idx} has invalid quantity.`,
-        );
-      }
-      if (!Number.isFinite(price) || price < 0) {
-        throw new DomainError(
-          "VALIDATION_ERROR",
-          `Item at index ${idx} has invalid unitPriceMinor.`,
-        );
-      }
+      const quantity = toPositiveQuantity(
+        item.quantity,
+        `Item at index ${idx} quantity`,
+      );
+      const unitPriceMinor = toNonNegativeMinorUnits(
+        item.unitPriceMinor,
+        `Item at index ${idx} unitPriceMinor`,
+      );
+      validatedItems.push({ title: item.title, quantity, unitPriceMinor });
     }
 
     // Validate shipping address serializability
@@ -121,12 +126,11 @@ export class GenerateDraftOrderUseCase {
       );
     }
 
-    // --- Compute total
-    const totalMinor = items.reduce((sum, item) => {
-      return (
-        sum + Math.floor(Number(item.unitPriceMinor) * Number(item.quantity))
-      );
-    }, 0);
+    // --- Compute total (exact integer minor-unit arithmetic)
+    const totalMinor = validatedItems.reduce(
+      (sum, item) => sum + item.unitPriceMinor * item.quantity,
+      0,
+    );
 
     // --- Build draft order
     const draftOrderId = this.idGenerator.generate();
@@ -134,11 +138,7 @@ export class GenerateDraftOrderUseCase {
     const draftOrder: DraftOrderRecord = {
       id: draftOrderId,
       email,
-      items: items.map((it) => ({
-        title: it.title,
-        quantity: Math.floor(Number(it.quantity)),
-        unitPriceMinor: Math.floor(Number(it.unitPriceMinor)),
-      })),
+      items: validatedItems,
       shippingAddress,
       totalMinor,
       status: "awaiting_payment",
@@ -149,10 +149,36 @@ export class GenerateDraftOrderUseCase {
       },
     };
 
-    // --- Persist draft order (transactional)
+    // --- Persist draft order + enqueue invoice intent (atomic)
+    // L8 PART 3: the invoice notification is appended to the notification
+    // outbox INSIDE the same transaction as the draft order save. The recipient
+    // is the durable DraftOrderRecord.email and every financial value comes from
+    // the same frozen record (draftOrder.totalMinor / draftOrder.items.length) —
+    // never recomputed from today's inputs. Delivery is relayed onto the queue
+    // AFTER commit by EnqueuePendingNotificationsUseCase and dispatched by the
+    // worker; a notification failure can therefore never roll back the draft
+    // order, and a draft order is never created without its invoice intent.
     try {
       const work = async () => {
         await this.draftOrderRepository.save(draftOrder);
+
+        if (sendInvoice) {
+          const invoiceIntent: NotificationIntent = {
+            type: "draft_order_invoice",
+            payload: {
+              recipient: { email: draftOrder.email },
+              draftOrderId: draftOrder.id,
+              totalMinor: draftOrder.totalMinor,
+              currency: null,
+              itemCount: draftOrder.items.length,
+              createdAt: draftOrder.createdAt,
+            },
+          };
+          await this.notificationOutboxRepository.append(
+            this.idGenerator.generate(),
+            invoiceIntent,
+          );
+        }
       };
 
       await this.transactionManager.execute(work);
@@ -185,36 +211,6 @@ export class GenerateDraftOrderUseCase {
       }
 
       throw new DomainError("INTERNAL_ERROR", "Failed to create draft order.");
-    }
-
-    // --- Send invoice link to customer (best-effort)
-    if (sendInvoice) {
-      try {
-        await this.notificationService.sendDraftOrderInvoice(
-          email,
-          draftOrderId,
-        );
-      } catch (err: unknown) {
-        this.logger.warn(
-          "Notification service failed to send draft order invoice",
-          { err, draftOrderId, email },
-        );
-        try {
-          await this.auditLogService.logAction(
-            actorId,
-            "DRAFT_ORDER_INVOICE_SEND_FAILED",
-            {
-              auditId: this.idGenerator.generate(),
-              draftOrderId,
-              email,
-              createdBy: adminId,
-              notedAt: new Date().toISOString(),
-            },
-          );
-        } catch {
-          /* swallow audit errors */
-        }
-      }
     }
 
     // --- Audit log (non-blocking)

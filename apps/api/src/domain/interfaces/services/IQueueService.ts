@@ -29,6 +29,23 @@ export interface QueueJobOptions {
 
 import { DeadLetterJob } from "@api/domain/shared/workflow";
 
+/**
+ * The lifecycle state of an existing queue job, as observed by the queue
+ * contract (L8-R PART 14). Only a LIVE state (`waiting` | `delayed` |
+ * `active`) proves a job will actually be delivered; `completed`/`failed`/
+ * `paused`/`waiting-children`/`unknown` do not. `null` means no such job
+ * exists.
+ */
+export type QueueJobState =
+  | "waiting"
+  | "delayed"
+  | "active"
+  | "waiting-children"
+  | "completed"
+  | "failed"
+  | "paused"
+  | "unknown";
+
 // Abstract interface to be implemented by the Infrastructure Layer
 export interface IQueueService {
   enqueueJob(
@@ -36,6 +53,14 @@ export interface IQueueService {
     payload: unknown,
     options?: QueueJobOptions,
   ): Promise<void>;
+  /**
+   * Resolve the lifecycle state of an existing job by its deterministic id,
+   * or `null` when no such job exists. Used to prove that a DUPLICATE enqueue
+   * collision refers to a LIVE job (so the row can be marked queued) rather
+   * than an unprovable/stale one (which must fail closed). Errors surface as
+   * RepositoryError.
+   */
+  getJobState(queueName: string, jobId: string): Promise<QueueJobState | null>;
   getFailedJobs(
     queueName: string,
     offset: number,
