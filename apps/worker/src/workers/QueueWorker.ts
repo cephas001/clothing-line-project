@@ -200,6 +200,14 @@ export class QueueWorker<TPayload> {
  *   unexpected errors; BullMQ applies the producer's attempts + backoff.
  */
 export function classifyError(err: unknown): JobFailureKind {
+  // A worker that explicitly raised PermanentJobFailure (orphaned job, terminal
+  // provider rejection) already decided the outcome is unrecoverable: never
+  // transiently retry it. `name` is "UnrecoverableError" so BullMQ's
+  // shouldRetryJob moves the job straight to failed.
+  if (err instanceof PermanentJobFailure) {
+    return "terminal";
+  }
+
   if (err instanceof DomainError) {
     switch (err.code) {
       case "VALIDATION_ERROR":

@@ -24,6 +24,16 @@
 // is left explicitly unavailable until the composition root is given one. No
 // fake/no-op processor is ever substituted.
 //
+// NotificationEventWorker consumes the notification-events-queue (L8-R): it
+// re-validates the typed job payload, resolves the authoritative outbox row by
+// id, calls INotificationService OUTSIDE any DB transaction (suppression is
+// enforced inside the adapter BEFORE the provider call), and persists the
+// dispatch receipt via ITransactionManager in a SHORT local transaction. It is
+// registered whenever an INotificationService is present (i.e.
+// NOTIFICATION_API_KEY is set) — the outbox repository, transaction manager,
+// and logger are always injected; a missing notification service is REPORTED
+// unavailable, never faked.
+//
 // Construction is side-effect-free (BullMQ v6 workers start only on run());
 // WorkerRegistry.startAll()/closeAll() drive the lifecycle explicitly.
 
@@ -33,10 +43,14 @@ import type { VerifyPaymentEventUseCase } from "@api/use-cases/checkout/VerifyPa
 import type { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
 import type { VerifySwapPaymentEventUseCase } from "@api/use-cases/logistics/VerifySwapPaymentEventUseCase";
 import type { ProcessCourierTrackingEventUseCase } from "@api/use-cases/logistics/ProcessCourierTrackingEventUseCase";
+import type { INotificationService } from "@api/domain/shared/notifications";
+import type { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
+import type { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { WorkerRegistry } from "../workers/WorkerRegistry";
 import { PaymentEventWorker } from "../workers/PaymentEventWorker";
 import { LogisticsEventWorker } from "../workers/LogisticsEventWorker";
+import { NotificationEventWorker } from "../workers/NotificationEventWorker";
 import {
   BulkCatalogImportWorker,
   BulkCatalogImportProcessor,
@@ -58,6 +72,16 @@ export interface WorkerBuildOptions {
   processCourierTrackingEvent: ProcessCourierTrackingEventUseCase;
   /** Provided once ProcessBulkCatalogImportUseCase (or an equivalent processor) exists. */
   bulkCatalogImportProcessor?: BulkCatalogImportProcessor;
+  /** Durable notification outbox the worker reconciles (always present). */
+  notificationOutboxRepository: INotificationOutboxRepository;
+  /** Opens the SHORT transaction that persists the dispatch receipt. */
+  transactionManager: ITransactionManager;
+  /**
+   * Provider-neutral notification service. Present only when the composition
+   * root could construct the Resend adapter (NOTIFICATION_API_KEY set);
+   * otherwise the worker is reported unavailable.
+   */
+  notificationService?: INotificationService;
 }
 
 export interface WorkerComposition {
@@ -124,6 +148,30 @@ export function buildWorkers(options: WorkerBuildOptions): WorkerComposition {
     }),
   );
   started.push("LogisticsEventWorker");
+
+  // NotificationEventWorker consumes the notification-events-queue. The outbox
+  // repository + transaction manager are always present; the worker is
+  // registered only when an INotificationService (the Resend adapter) was
+  // constructed. It completes the durable pipeline: resolve the row by id ->
+  // dispatch OUTSIDE any transaction (suppression happens inside the adapter
+  // BEFORE the provider call) -> persist the receipt in a short transaction.
+  if (options.notificationService) {
+    registry.register(
+      new NotificationEventWorker({
+        connection: options.bullConnection,
+        outboxRepository: options.notificationOutboxRepository,
+        notificationService: options.notificationService,
+        transactionManager: options.transactionManager,
+        logger: options.logger,
+      }),
+    );
+    started.push("NotificationEventWorker");
+  } else {
+    unavailable.push({
+      worker: "NotificationEventWorker",
+      missingDependency: "INotificationService (NOTIFICATION_API_KEY not set)",
+    });
+  }
 
   return { registry, report: { started, unavailable } };
 }

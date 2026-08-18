@@ -28,6 +28,7 @@ import {
   disposeInfrastructure,
   InfrastructureDependencies,
 } from "@api/infrastructure/composition/infrastructure";
+import { buildNotificationService } from "@api/infrastructure/composition/notificationService";
 import { buildRepositories, Repositories } from "@api/infrastructure/composition/repositories";
 import { buildUseCases, UseCaseComposition } from "@api/infrastructure/composition/useCases";
 import { buildWorkers, WorkerComposition } from "./composition/workers";
@@ -72,6 +73,18 @@ export function bootstrapWorker(
   const repositories = buildRepositories(infrastructure.transactionContext);
   const logger = infrastructure.logger;
 
+  // --- Product read cache: deliberately OUT of scope here (L9-T) --------------
+  // The API composition root (bootstrapApplication) wraps productReadRepository
+  // with CachedProductReadRepository and the product/variant/moneyAmount write
+  // repos with the Invalidating* decorators. This worker runtime builds the
+  // SAME factories directly, so it constructs ONLY the plain Postgres
+  // repositories: no product cache decorator, no product cache keyspace, no
+  // PRODUCT_CACHE_TTL_SECONDS requirement. Workers that never perform product
+  // reads (payment/logistics/notification event handling) therefore never
+  // require Redis for product reads — Redis here exists solely for BullMQ
+  // (queueService/bullConnection) and session revocation. If a future worker
+  // needs product reads, wire the decorator HERE, never inside a use case.
+
   // --- Use cases: every use case receives the concrete IAuditLogService -------
   const auditLogService = options.auditLogService ?? infrastructure.auditLogService;
   const useCases = buildUseCases({
@@ -91,6 +104,12 @@ export function bootstrapWorker(
     unwired: useCases.report.unwired.length,
   });
 
+  // --- Notification service (Resend) via the shared composition factory ------
+  // Constructed in infrastructure/composition only; undefined when
+  // NOTIFICATION_API_KEY is absent (the NotificationEventWorker is then
+  // reported unavailable, never faked).
+  const notificationService = buildNotificationService(config, logger);
+
   // --- Workers: PaymentEventWorker verifies THEN finalizes -------------------
   // Financial verification (VerifyPaymentEventUseCase) runs before
   // FinalizeOrderTransactionUseCase for every checkout event, and
@@ -102,6 +121,11 @@ export function bootstrapWorker(
   // the state machines -> persist via ITransactionManager -> audit). The worker
   // never creates shipments, never calls Shipbubble, and never holds a
   // transaction across anything external.
+  //
+  // NotificationEventWorker completes the durable notification pipeline
+  // (L8-R): resolve the outbox row by id -> dispatch OUTSIDE any transaction
+  // (recipient-preference suppression happens inside the adapter BEFORE the
+  // provider call) -> persist the dispatch receipt in a short transaction.
   const workers = buildWorkers({
     logger,
     bullConnection: infrastructure.bullConnection,
@@ -112,6 +136,9 @@ export function bootstrapWorker(
     processCourierTrackingEvent:
       useCases.useCases.logistics.processCourierTrackingEvent,
     bulkCatalogImportProcessor: options.bulkCatalogImportProcessor,
+    notificationOutboxRepository: repositories.notificationOutboxRepository,
+    transactionManager: infrastructure.transactionManager,
+    notificationService,
   });
 
   let shutDown = false;
