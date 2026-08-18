@@ -12,7 +12,7 @@ Guidance for AI tools and contributors working on this repository. Read this bef
 - `packages/shared-types` — Generated TypeScript types from the OpenAPI spec (via `openapi-typescript`). `main`/`types` point directly at `src/index.ts` (no build step).
 - `packages/config` — Empty placeholder.
 
-Tech stack: **pnpm**, **TypeScript**, **Turborepo**, Postgres 18 + Redis 7 via Docker Compose, OpenAPI 3.0 (Stoplight Prism mock).
+Tech stack: **pnpm**, **TypeScript**, **Turborepo**, Postgres 18 + Redis 7 via Docker Compose, Express 5 API, BullMQ workers, OpenAPI 3.0 (Stoplight Prism mock available via `dev:mock`).
 
 ## Commands
 
@@ -22,11 +22,20 @@ Run from repo root. This is a pnpm/Turbo monorepo — always scope package comma
 # Install dependencies
 pnpm install
 
-# Start infrastructure (Postgres + Redis) then all dev tasks
+# Provision local .env files (DATABASE_URL + generated per-machine JWT_SECRET
+# for the API and worker; NEXT_PUBLIC_API_URL for the storefront). Idempotent.
+pnpm setup
+
+# Start infrastructure (Postgres + Redis, waiting for readiness), provision
+# env, apply pending forward-only migrations, then run ALL dev tasks in
+# parallel (real Express API on :5000, worker, storefront on :3000).
 pnpm dev
 
-# Stop infrastructure
+# Stop infrastructure (containers stay; local volumes persist)
 pnpm stop
+
+# Stop and wipe the Postgres/Redis volumes (DESTRUCTIVE — deletes local data)
+pnpm clean
 
 # Typecheck the API (the only meaningful verification; must exit 0)
 pnpm --filter @clothing-line-project/api typecheck
@@ -34,20 +43,20 @@ pnpm --filter @clothing-line-project/api typecheck
 # Typecheck the worker runtime (imports the API via @api/* aliases)
 pnpm --filter @clothing-line-project/worker typecheck
 
-# Run the API use cases / domain only (Express server, if present)
-pnpm --filter @clothing-line-project/api dev:express
+# Run ONLY the real API (Express on :5000) without the worker/storefront
+pnpm --filter @clothing-line-project/api dev
+
+# Mock the OpenAPI spec without any real backend (Prism on :4010)
+pnpm --filter @clothing-line-project/api dev:mock
 
 # Run the worker runtime (consumes BullMQ queues; needs Redis + Postgres up)
 pnpm --filter @clothing-line-project/worker start
-
-# Mock the OpenAPI spec without any real backend
-pnpm --filter @clothing-line-project/api dev
 
 # Regenerate shared types from the API OpenAPI spec
 pnpm --filter @clothing-line-project/shared-types generate
 ```
 
-**Typechecking** is the primary validation gate for the domain layer. A zero-dependency test harness IS configured under `apps/api/tests` (`tests/harness/runner.ts` + `tests/harness/expect.ts`): `test` runs every suite via tsx, `typecheck:tests` typechecks src + tests (it may include `../worker/src/workers/QueueWorker.ts` and `../worker/src/workers/NotificationEventWorker.ts` so the API suite can exercise the real worker crash semantics), and `db:test` runs the real-Postgres suites (requires live Postgres + DATABASE_URL). Do not assume a framework like Jest/Vitest is installed. Verify domain changes with `typecheck`, `typecheck:tests`, and `test`; new suites must be registered in `apps/api/tests/run.ts`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` runs a Prism mock from it.
+**Typechecking** is the primary validation gate for the domain layer. A zero-dependency test harness IS configured under `apps/api/tests` (`tests/harness/runner.ts` + `tests/harness/expect.ts`): `test` runs every suite via tsx, `typecheck:tests` typechecks src + tests (it may include `../worker/src/workers/QueueWorker.ts` and `../worker/src/workers/NotificationEventWorker.ts` so the API suite can exercise the real worker crash semantics), and `db:test` runs the real-Postgres suites (requires live Postgres + DATABASE_URL). Do not assume a framework like Jest/Vitest is installed. Verify domain changes with `typecheck`, `typecheck:tests`, and `test`; new suites must be registered in `apps/api/tests/run.ts`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` boots the real Express server and `dev:mock` runs a Prism mock from it.
 
 ## Monorepo layout
 
@@ -145,7 +154,8 @@ root (`apps/worker/src/bootstrap.ts`). The `NotificationEventWorker` consumes
 each job's outbox row by id and persists the dispatch receipt through
 `ITransactionManager` in a short transaction — never a provider call inside a
 transaction. Workers start only on explicit `runtime.start()` from
-`apps/worker/src/index.ts` — never on import. Validate with
+`apps/worker/src/index.ts` — never on import (`QueueWorker` pins BullMQ's
+`autorun` to `false`, so construction stays side-effect-free). Validate with
 `pnpm --filter @clothing-line-project/worker typecheck`.
 
 ### Guidelines

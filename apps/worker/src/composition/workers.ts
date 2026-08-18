@@ -34,8 +34,9 @@
 // and logger are always injected; a missing notification service is REPORTED
 // unavailable, never faked.
 //
-// Construction is side-effect-free (BullMQ v6 workers start only on run());
-// WorkerRegistry.startAll()/closeAll() drive the lifecycle explicitly.
+// Construction is side-effect-free (QueueWorker pins BullMQ v6.0.10's autorun
+// option to false, so workers start only on run()); WorkerRegistry.startAll()/
+// closeAll() drive the lifecycle explicitly.
 
 import type { ConnectionOptions } from "bullmq";
 import type { FinalizeOrderTransactionUseCase } from "@api/use-cases/checkout/FinalizeOrderTransactionUseCase";

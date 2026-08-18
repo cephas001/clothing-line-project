@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "prism mock -d openapi.yaml -p 4010",
+    "dev": "tsx watch src/server.ts",
+    "dev:mock": "prism mock -d openapi.yaml -p 4010",
     "dev:express": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",

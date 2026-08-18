@@ -1,36 +1,20 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# @clothing-line-project/storefront
 
-## Getting Started
+Next.js (App Router, 16) storefront for the clothing-line headless e-commerce
+monorepo. Tailwind CSS v4 (`@tailwindcss/postcss`). Build via `turbo run build`.
 
-First, run the development server:
+## Local development
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+From the repository root, `pnpm dev` starts the full stack — infra (Postgres +
+Redis), the real Express API on `:5000`, the background worker, and this
+storefront on `:3000`. See the root `AGENTS.md` for the complete command set.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The storefront talks to the API through `NEXT_PUBLIC_API_URL` (loaded from
+`.env.local`, provisioned automatically by `scripts/prepare-env.mjs`; see
+`.env.example`). In development it points at the real API on
+`http://localhost:5000` — the Prism mock (port `4010`) is opt-in only.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Status
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The storefront is currently the stock `create-next-app` landing page; no global
+state or API integration layers are implemented yet.

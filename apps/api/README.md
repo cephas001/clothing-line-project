@@ -8,6 +8,15 @@ Redis adapters live under `src/infrastructure`, and the composition root under
 
 > Companion guidance for AI tools: see the repository-root `AGENTS.md`.
 
+## Running locally
+
+`pnpm dev` from the repository root starts the real Express server on `:5000`
+after bringing up Postgres/Redis, provisioning env files, and applying pending
+forward-only migrations. The server serves the OpenAPI contract in
+`openapi.yaml` (docs at `/api-docs`); a Prism mock of the same spec runs on
+`:4010` via `pnpm --filter @clothing-line-project/api dev:mock`. See the root
+`AGENTS.md` for the full command set.
+
 ## Product read cache (L9-T)
 
 A read-through Redis cache over the Postgres-backed `IProductReadRepository`.

@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "docker compose up -d && turbo run dev",
+    "dev": "docker compose up -d --wait && node scripts/prepare-env.mjs && turbo run dev",
     "stop": "docker compose down",
-    "clean": "docker compose down -v && pnpm clean"
+    "setup": "node scripts/prepare-env.mjs",
+    "clean": "docker compose down -v"
   },
   "keywords": [],
   "author": "",

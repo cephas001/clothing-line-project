@@ -5,9 +5,11 @@
 // Responsibilities:
 // - Wrap a BullMQ Worker so consumers receive a typed payload contract
 //   (`WorkerJob<TPayload>`) instead of raw BullMQ Job access.
-// - Constructing a worker is side-effect-free: BullMQ v6 starts processing
-//   only when `run()` is called, so the composition root can build every
-//   worker at bootstrap and start them together via start()/WorkerRegistry.
+// - Constructing a worker is side-effect-free: BullMQ v6.0.10 defaults
+//   `autorun: true` (the Worker starts consuming in its constructor), so this
+//   harness pins `autorun: false` and begins processing only when `start()` ->
+//   `run()` is called. The composition root can therefore build every worker
+//   at bootstrap and start them together via start()/WorkerRegistry.
 // - Log structured context (queue, jobId, attemptsMade) around every job and
 //   CLASSIFY failures before deciding retry semantics:
 //
@@ -96,6 +98,11 @@ export class QueueWorker<TPayload> {
       {
         ...(options.workerOptions ?? {}),
         connection: options.connection,
+        // BullMQ v6.0.10 defaults autorun to true, which would start consuming
+        // inside the constructor and make the later explicit start() -> run()
+        // throw "Worker is already running". Pin it off so construction stays
+        // side-effect-free and the WorkerRegistry lifecycle drives consuming.
+        autorun: false,
       },
     );
 
