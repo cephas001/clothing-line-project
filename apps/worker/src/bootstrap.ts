@@ -31,6 +31,7 @@ import {
 import { buildNotificationService } from "@api/infrastructure/composition/notificationService";
 import { buildRepositories, Repositories } from "@api/infrastructure/composition/repositories";
 import { buildUseCases, UseCaseComposition } from "@api/infrastructure/composition/useCases";
+import { useCaseReportLines } from "@api/infrastructure/composition/useCases/types";
 import { buildWorkers, WorkerComposition } from "./composition/workers";
 
 export interface WorkerBootstrapOptions {
@@ -69,7 +70,7 @@ export function bootstrapWorker(
   options: WorkerBootstrapOptions = {},
 ): WorkerRuntime {
   const config = loadAppConfig();
-  const infrastructure = buildInfrastructure(config);
+  const infrastructure = buildInfrastructure(config, { component: "worker" });
   const repositories = buildRepositories(infrastructure.transactionContext);
   const logger = infrastructure.logger;
 
@@ -86,22 +87,35 @@ export function bootstrapWorker(
   // needs product reads, wire the decorator HERE, never inside a use case.
 
   // --- Use cases: every use case receives the concrete IAuditLogService -------
+  // The worker runtime deliberately wires NO external services into use cases:
+  // its workers consume only the always-wired use cases (payment verification +
+  // finalization, swap finalization, courier tracking) plus the notification
+  // outbox. Use cases that depend on an external service are classified as
+  // deferred by design, never as configuration gaps.
   const auditLogService = options.auditLogService ?? infrastructure.auditLogService;
-  const useCases = buildUseCases({
-    ...repositories,
-    logger: infrastructure.logger,
-    idGenerator: infrastructure.idGenerator,
-    auditLogService,
-    transactionManager: infrastructure.transactionManager,
-    queueService: infrastructure.queueService,
-    hashingService: infrastructure.hashingService,
-    tokenService: infrastructure.tokenService,
-    sessionRevocationService: infrastructure.sessionRevocationService,
-    cryptographyService: infrastructure.cryptographyService,
-  });
+  const useCases = buildUseCases(
+    {
+      ...repositories,
+      logger: infrastructure.logger,
+      idGenerator: infrastructure.idGenerator,
+      auditLogService,
+      transactionManager: infrastructure.transactionManager,
+      queueService: infrastructure.queueService,
+      hashingService: infrastructure.hashingService,
+      tokenService: infrastructure.tokenService,
+      sessionRevocationService: infrastructure.sessionRevocationService,
+      cryptographyService: infrastructure.cryptographyService,
+    },
+    { runtime: "worker" },
+  );
   logger.info("Use cases composed", {
-    wired: useCases.report.wired.length,
-    unwired: useCases.report.unwired.length,
+    runtime: "worker",
+    wired: useCases.report.summary.wired,
+    unavailableMissingInfrastructure:
+      useCases.report.summary.unavailableMissingInfrastructure,
+    unavailableMissingConfiguration:
+      useCases.report.summary.unavailableMissingConfiguration,
+    deferredByDesign: useCases.report.summary.deferredByDesign,
   });
 
   // --- Notification service (Resend) via the shared composition factory ------
@@ -172,20 +186,20 @@ export function bootstrapWorker(
     describe(): string {
       const lines: string[] = [];
       lines.push(`Redis: ${config.redisUrl}`);
-      lines.push(
-        `Use cases: ${useCases.report.wired.length} wired, ` +
-          `${useCases.report.unwired.length} unwired`,
-      );
-      for (const u of useCases.report.unwired) {
-        lines.push(`  unwired: ${u.useCase} (missing ${u.missingDependency})`);
-      }
+      lines.push("");
+      lines.push(...useCaseReportLines(useCases.report));
+      lines.push("");
       lines.push(
         `Workers: ${workers.report.started.join(", ") || "none started"}`,
       );
       for (const w of workers.report.unavailable) {
-        lines.push(`  unavailable: ${w.worker} (${w.missingDependency})`);
+        const label =
+          w.status === "unavailable-missing-infrastructure"
+            ? "Unavailable — missing infrastructure capability"
+            : "Unavailable — missing configuration";
+        lines.push(`  ${label}: ${w.worker} (${w.missingDependency})`);
       }
-      return lines.join("\n");
+      return lines.map((line) => (line === "" ? line : `  ${line}`)).join("\n");
     },
   };
 

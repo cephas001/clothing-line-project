@@ -41,6 +41,7 @@ import {
 import { ProductReadCacheInvalidator } from "../caching/ProductReadCacheInvalidator";
 import { buildUseCases, UseCaseComposition } from "./useCases";
 import type { ExternalServiceDependencies } from "./useCases/types";
+import { useCaseReportLines } from "./useCases/types";
 import { PaystackPaymentService } from "../services/PaystackPaymentService";
 import { PaystackWebhookPayloadMapper } from "../services/PaystackWebhookPayloadMapper";
 import { ShipbubbleLogisticsService } from "../services/ShipbubbleLogisticsService";
@@ -136,7 +137,7 @@ export function bootstrapApplication(
   options: BootstrapOptions = {},
 ): ApplicationRuntime {
   const config = loadAppConfig();
-  const infrastructure = buildInfrastructure(config);
+  const infrastructure = buildInfrastructure(config, { component: "api" });
   const repositories = buildRepositories(infrastructure.transactionContext);
   const logger = infrastructure.logger;
 
@@ -255,22 +256,30 @@ export function bootstrapApplication(
 
   // --- Use cases: every use case receives the concrete IAuditLogService -------
   const auditLogService = options.auditLogService ?? infrastructure.auditLogService;
-  const useCases = buildUseCases({
-    ...repositories,
-    logger: infrastructure.logger,
-    idGenerator: infrastructure.idGenerator,
-    auditLogService,
-    transactionManager: infrastructure.transactionManager,
-    queueService: infrastructure.queueService,
-    hashingService: infrastructure.hashingService,
-    tokenService: infrastructure.tokenService,
-    sessionRevocationService: infrastructure.sessionRevocationService,
-    cryptographyService: infrastructure.cryptographyService,
-    externalServices,
-  });
+  const useCases = buildUseCases(
+    {
+      ...repositories,
+      logger: infrastructure.logger,
+      idGenerator: infrastructure.idGenerator,
+      auditLogService,
+      transactionManager: infrastructure.transactionManager,
+      queueService: infrastructure.queueService,
+      hashingService: infrastructure.hashingService,
+      tokenService: infrastructure.tokenService,
+      sessionRevocationService: infrastructure.sessionRevocationService,
+      cryptographyService: infrastructure.cryptographyService,
+      externalServices,
+    },
+    { runtime: "api" },
+  );
   logger.info("Use cases composed", {
-    wired: useCases.report.wired.length,
-    unwired: useCases.report.unwired.length,
+    runtime: "api",
+    wired: useCases.report.summary.wired,
+    unavailableMissingInfrastructure:
+      useCases.report.summary.unavailableMissingInfrastructure,
+    unavailableMissingConfiguration:
+      useCases.report.summary.unavailableMissingConfiguration,
+    deferredByDesign: useCases.report.summary.deferredByDesign,
   });
 
   // --- Payment webhook HTTP adapter (Phase 6/7) --------------------------------
@@ -423,13 +432,9 @@ export function bootstrapApplication(
       const lines: string[] = [];
       lines.push(`Port: ${config.port}`);
       lines.push(`Redis: ${config.redisUrl}`);
-      lines.push(
-        `Use cases: ${useCases.report.wired.length} wired, ` +
-          `${useCases.report.unwired.length} unwired`,
-      );
-      for (const u of useCases.report.unwired) {
-        lines.push(`  unwired: ${u.useCase} (missing ${u.missingDependency})`);
-      }
+      lines.push("");
+      lines.push(...useCaseReportLines(useCases.report));
+      lines.push("");
       lines.push(
         paymentWebhookRouter
           ? "Payment webhook: mounted (/store/payments/webhook)"
@@ -494,7 +499,7 @@ export function bootstrapApplication(
       lines.push(
         `Product read cache: Redis (TTL ${config.productCacheTtlSeconds}s, generation-bump invalidation on product/variant/pricing writes)`,
       );
-      return lines.join("\n");
+      return lines.map((line) => (line === "" ? line : `  ${line}`)).join("\n");
     },
   };
 

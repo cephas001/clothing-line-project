@@ -16,9 +16,7 @@ async function main(): Promise<void> {
   const runtime = bootstrapWorker();
   const logger = runtime.infrastructure.logger;
 
-  logger.info("Worker bootstrap summary", {
-    summary: runtime.describe(),
-  });
+  logger.diagnostic("Worker bootstrap summary", runtime.describe());
 
   // Graceful shutdown: stop workers first, then close queue connections, the
   // Postgres pool, and Redis. Registered as an OTel shutdown hook so cleanup

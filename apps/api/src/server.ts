@@ -37,9 +37,7 @@ async function main(): Promise<void> {
       port,
       url: `http://localhost:${port}`,
     });
-    logger.info("Application bootstrap summary", {
-      summary: runtime.describe(),
-    });
+    logger.diagnostic("Application bootstrap summary", runtime.describe());
   });
 
   // Graceful shutdown: stop accepting new connections, then close queue
