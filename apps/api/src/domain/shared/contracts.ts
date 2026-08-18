@@ -115,6 +115,13 @@ export interface FulfillmentRecord extends JsonObject {
    * write downstream statuses.
    */
   status?: string;
+  /**
+   * The inventory location that actually fulfilled the order (the frozen
+   * primary location from `Order.sourcingSnapshot`). The provider-neutral
+   * dispatch flow uses it to resolve the shipment origin FROM the local
+   * location record — never reconstructed from the logistics provider.
+   */
+  sourcingLocationId?: string;
 }
 
 /**
@@ -241,12 +248,63 @@ export interface OrderShippingSnapshot {
 }
 
 /**
+ * Provider-neutral shipment origin (sender) frozen onto the ORDER from the
+ * inventory location that sourced the order. The LOCAL `InventoryLocation`
+ * record is the source of truth for a node's shipment origin — the logistics
+ * provider NEVER becomes the source of truth, and the application never
+ * invents an origin. `providerAddressCode` is an adapter-owned cache of the
+ * provider's validated sender code, never a business input.
+ */
+export interface ShipmentOrigin {
+  /** The inventory location id the origin resolves from. */
+  locationId: string;
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  providerAddressCode?: string | null;
+}
+
+/**
+ * Provider-neutral sourcing snapshot frozen onto the ORDER at finalization.
+ *
+ * Records EXACTLY which inventory locations held the reserved units that
+ * became the order (variant -> location -> quantity), the deterministic
+ * primary fulfillment location, and the shipment origin resolved from that
+ * location's LOCAL sender record. Dispatch/RMA flows consume this snapshot so
+ * they are self-contained and never depend on the mutable inventory tables or
+ * a provider decision. A null `origin` means the primary location carried no
+ * complete sender record — dispatch degrades rather than inventing one.
+ */
+export interface OrderSourcingSnapshot {
+  /** The ISO-8601 timestamp the snapshot was frozen at (order creation). */
+  frozenAt: string;
+  /** The reserved lines the order was built from, sorted by variantId. */
+  variantLines: Array<{
+    variantId: string;
+    quantity: number;
+    locationId: string;
+  }>;
+  /** Deterministic primary fulfillment location (majority by quantity; tie-break by smallest id). Null when no reservations. */
+  primaryLocationId: string | null;
+  /** Shipment origin resolved from the primary location's sender record; null when incomplete/absent. */
+  origin: ShipmentOrigin | null;
+}
+
+/**
  * Everything the application supplies to create a shipment. The adapter uses
  * this verbatim — it never invents a courier, price, address or parcel.
  */
 export interface ShippingLabelRequest extends OrderShippingSnapshot {
   /** Application order id the shipment belongs to (audit/traceability). */
   orderId: string;
+  /**
+   * Frozen shipment origin from `Order.sourcingSnapshot` (the LOCAL inventory
+   * location record). Null when the order carries no sourcing snapshot (e.g. a
+   * custom-only cart) or the location had no complete sender record. The
+   * adapter validates the shape when present but never decides an origin.
+   */
+  origin?: ShipmentOrigin | null;
 }
 
 export interface ShippingLabelResult {
@@ -435,7 +493,17 @@ export interface PaymentAmountBreakdown {
   subtotalMinor: number;
   /** Server-computed promotion discount, never trusted from the client. */
   discountMinor: number;
-  /** Server-computed regional tax (Cart.taxAmountMinor); 0 when none. */
+  /**
+   * Server-computed regional tax (Cart.taxAmountMinor); 0 when none.
+   *
+   * HISTORICAL TAX SNAPSHOT DECISION: this AMOUNT is the authoritative frozen
+   * financial record (INV-7). The tax RATE that produced it is NOT persisted
+   * or reconstructed from live configuration — the amount is the source of
+   * financial truth, and today's `region.tax_rate` changes can never alter an
+   * existing obligation. The rate is only ever derived at calculation time
+   * (SetCheckoutShippingAddressUseCase -> RegionalTaxCalculationService) and
+   * frozen as this amount.
+   */
   taxMinor: number;
   /** Selected shipping quote amount; 0 when none selected. */
   shippingMinor: number;

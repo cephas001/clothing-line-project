@@ -8,7 +8,9 @@ import { buildCartUseCases, CartUseCases } from "./cart";
 import { buildCatalogUseCases, CatalogUseCases } from "./catalog";
 import { buildCheckoutUseCases, CheckoutUseCases } from "./checkout";
 import { buildCustomersUseCases, CustomersUseCases } from "./customers";
+import { buildInventoryUseCases, InventoryUseCases } from "./inventory";
 import { buildLogisticsUseCases, LogisticsUseCases } from "./logistics";
+import { buildNotificationsUseCases, NotificationsUseCases } from "./notifications";
 import {
   UseCaseDependencies,
   UseCaseReport,
@@ -21,7 +23,9 @@ export interface AllUseCases {
   catalog: CatalogUseCases;
   checkout: CheckoutUseCases;
   customers: CustomersUseCases;
+  inventory: InventoryUseCases;
   logistics: LogisticsUseCases;
+  notifications: NotificationsUseCases;
 }
 
 export interface UseCaseComposition {
@@ -39,10 +43,21 @@ export function buildUseCases(
   const catalog = buildCatalogUseCases(deps, report);
   const checkout = buildCheckoutUseCases(deps, report);
   const customers = buildCustomersUseCases(deps, report);
+  const inventory = buildInventoryUseCases(deps, report);
   const logistics = buildLogisticsUseCases(deps, report);
+  const notifications = buildNotificationsUseCases(deps, report);
 
   return {
-    useCases: { admin, cart, catalog, checkout, customers, logistics },
+    useCases: {
+      admin,
+      cart,
+      catalog,
+      checkout,
+      customers,
+      inventory,
+      logistics,
+      notifications,
+    },
     report: report.toReport(),
   };
 }

@@ -9,7 +9,6 @@ import type { ISwapRepository } from "@api/domain/interfaces/repositories/ISwapR
 import type { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepository";
 import type { IPaymentRepository } from "@api/domain/interfaces/repositories/IPaymentRepository";
 import type { ITransactionRepository } from "@api/domain/interfaces/repositories/ITransactionRepository";
-import type { IVariantRepository } from "@api/domain/interfaces/repositories/IVariantRepository";
 import type { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import type { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
@@ -18,6 +17,7 @@ import {
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
 import type { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
+import { ConfirmInventoryReservationUseCase } from "@api/use-cases/inventory/ConfirmInventoryReservationUseCase";
 
 /**
  * Use case: finalize a confirmed swap after a successful upcharge payment event.
@@ -37,11 +37,11 @@ import type { ITransactionManager } from "@api/domain/interfaces/shared/ITransac
  *   UNIQUE; `payment.markCaptured()` is idempotent for an already-captured row.
  *
  * Atomicity (ITransactionManager): swap state transition, order modification,
- * replacement-item inventory changes, payment capture, and the ledger record
- * all commit or all roll back together. If the unit of work fails, NO partial
- * swap is applied. The SWAP_FINALIZED audit is a non-blocking side effect
- * written AFTER the transaction resolves (it never participates in the atomic
- * unit, matching the checkout finalization convention).
+ * replacement-item inventory confirmation, payment capture, and the ledger
+ * record all commit or all roll back together. If the unit of work fails, NO
+ * partial swap is applied. The SWAP_FINALIZED audit is a non-blocking side
+ * effect written AFTER the transaction resolves (it never participates in the
+ * atomic unit, matching the checkout finalization convention).
  *
  * Money integrity: the amount captured (verified upstream against the durable
  * obligation) is re-checked defensively here; the swap's frozen variance drives
@@ -64,11 +64,11 @@ export class FinalizeSwapTransactionUseCase {
     private readonly orderRepository: IOrderRepository,
     private readonly paymentRepository: IPaymentRepository,
     private readonly transactionRepository: ITransactionRepository,
-    private readonly variantRepository: IVariantRepository,
     private readonly auditLogService: IAuditLogService,
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
+    private readonly confirmInventoryReservation: ConfirmInventoryReservationUseCase,
   ) {}
 
   async execute(input: FinalizeSwapTransactionInput): Promise<Swap> {
@@ -267,7 +267,6 @@ export class FinalizeSwapTransactionUseCase {
         "Return line item not found on order.",
       );
     }
-    const returnedVariantId = returnedLine.variantId ?? null;
 
     // --- Atomic finalization ---------------------------------------------------
     // swap state transition + order modification + replacement-item inventory +
@@ -293,31 +292,19 @@ export class FinalizeSwapTransactionUseCase {
         });
         await this.orderRepository.save(order);
 
-        // 3. Replacement-item changes: restock the returned variant (when it has
-        //    one) and deduct the replacement variant's stock. Row locks acquired
-        //    inside the transaction prevent oversell/lost-update races.
-        if (returnedVariantId) {
-          const returnedVariant =
-            await this.variantRepository.lockVariantForUpdateNoWait(
-              returnedVariantId,
-            );
-          if (returnedVariant) {
-            returnedVariant.restockInventory(swap.returnQuantity);
-            await this.variantRepository.save(returnedVariant);
-          }
-        }
-        const newVariant =
-          await this.variantRepository.lockVariantForUpdateNoWait(
-            swap.newVariantId,
-          );
-        if (!newVariant) {
-          throw new DomainError(
-            "RESOURCE_NOT_FOUND",
-            "Replacement variant not found for swap finalization.",
-          );
-        }
-        newVariant.deductInventory(swap.returnQuantity);
-        await this.variantRepository.save(newVariant);
+        // 3. Confirm the swap's replacement hold (L9). The replacement variant
+        //    was reserved ATOMICALLY at swap creation (swap-scoped key anchored
+        //    on the deterministic swap id). Confirmation consumes the held
+        //    units atomically with the swap completion; replaying a finalized
+        //    swap finds the rows already terminal and is a NO-OP, so units are
+        //    never consumed twice. The RETURNED variant is intentionally NOT
+        //    auto-restocked here: it is physically coming back and only becomes
+        //    sellable after receipt inspection (a separate returns flow).
+        await this.confirmInventoryReservation.execute({
+          orderId: swap.id,
+          scope: "swap",
+          actorId,
+        });
 
         // 4. Payment capture (idempotent for an already-captured obligation).
         payment.markCaptured();

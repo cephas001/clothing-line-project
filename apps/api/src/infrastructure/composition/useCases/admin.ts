@@ -5,7 +5,6 @@
 // than faked.
 
 import { ConfigureRegionalPricingUseCase } from "@api/use-cases/admin/ConfigureRegionalPricingUseCase";
-import { ConfigureTaxCategoryUseCase } from "@api/use-cases/admin/ConfigureTaxCategoryUseCase";
 import { CreateProductUseCase } from "@api/use-cases/admin/CreateProductUseCase";
 import { CreateProductVariantUseCase } from "@api/use-cases/admin/CreateProductVariantUseCase";
 import { CreatePromotionRuleUseCase } from "@api/use-cases/admin/CreatePromotionRuleUseCase";
@@ -20,7 +19,6 @@ import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface AdminUseCases {
   configureRegionalPricing: ConfigureRegionalPricingUseCase;
-  configureTaxCategory: ConfigureTaxCategoryUseCase;
   createProduct: CreateProductUseCase;
   createProductVariant: CreateProductVariantUseCase;
   createPromotionRule: CreatePromotionRuleUseCase;
@@ -43,14 +41,6 @@ export function buildAdminUseCases(
     deps.variantRepository,
     deps.regionRepository,
     deps.moneyAmountRepository,
-    auditLogService,
-    idGenerator,
-    logger,
-    transactionManager,
-  );
-  const configureTaxCategory = new ConfigureTaxCategoryUseCase(
-    deps.taxCategoryRepository,
-    deps.regionRepository,
     auditLogService,
     idGenerator,
     logger,
@@ -134,7 +124,6 @@ export function buildAdminUseCases(
 
   report.wiredUseCases(
     "ConfigureRegionalPricingUseCase",
-    "ConfigureTaxCategoryUseCase",
     "CreateProductUseCase",
     "CreateProductVariantUseCase",
     "CreatePromotionRuleUseCase",
@@ -148,7 +137,6 @@ export function buildAdminUseCases(
 
   return {
     configureRegionalPricing,
-    configureTaxCategory,
     createProduct,
     createProductVariant,
     createPromotionRule,

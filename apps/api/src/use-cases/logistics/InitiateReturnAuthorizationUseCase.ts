@@ -20,6 +20,11 @@ import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+import {
+  toNonNegativeInteger,
+  toNonNegativeMinorUnits,
+  toPositiveQuantity,
+} from "@api/utils/moneyUtils";
 
 /**
  * Use case: initiate a return authorization (RMA) for an order.
@@ -105,16 +110,7 @@ export class InitiateReturnAuthorizationUseCase {
           `Item at index ${idx} must include a lineItemId.`,
         );
       }
-      const qty = Number(it.quantity);
-      if (
-        !Number.isFinite(qty) ||
-        qty < InitiateReturnAuthorizationUseCase.MIN_QUANTITY
-      ) {
-        throw new DomainError(
-          "VALIDATION_ERROR",
-          `Item at index ${idx} has invalid quantity.`,
-        );
-      }
+      toPositiveQuantity(it.quantity, `Item at index ${idx} quantity`);
       if (!it.reasonCode || typeof it.reasonCode !== "string") {
         throw new DomainError(
           "VALIDATION_ERROR",
@@ -145,13 +141,10 @@ export class InitiateReturnAuthorizationUseCase {
           "returnSelection must include the return courierId and serviceCode.",
         );
       }
-      const amountMinor = Number(returnSelection.amountMinor);
-      if (!Number.isInteger(amountMinor) || amountMinor < 0) {
-        throw new DomainError(
-          "VALIDATION_ERROR",
-          "returnSelection amountMinor must be a non-negative integer.",
-        );
-      }
+      toNonNegativeMinorUnits(
+        returnSelection.amountMinor,
+        "returnSelection amountMinor",
+      );
     }
 
     const auditId = this.idGenerator.generate();
@@ -220,8 +213,14 @@ export class InitiateReturnAuthorizationUseCase {
           );
         }
 
-        const fulfilledQty = Number(originalItem.fulfilledQuantity ?? 0);
-        const requestedQty = Number(returnReq.quantity);
+        const fulfilledQty = toNonNegativeInteger(
+          originalItem.fulfilledQuantity ?? 0,
+          "Fulfilled quantity",
+        );
+        const requestedQty = toPositiveQuantity(
+          returnReq.quantity,
+          "Return quantity",
+        );
 
         if (requestedQty > fulfilledQty) {
           throw new DomainError(
@@ -230,13 +229,13 @@ export class InitiateReturnAuthorizationUseCase {
           );
         }
 
-        // Use order's domain method to compute prorated value
-        let proratedItemValue = 0;
-        proratedItemValue = Number(
-          loadedOrder.calculateProratedValue(originalItem.id, requestedQty),
+        // Use order's domain method to compute prorated value (integer minor units)
+        const proratedItemValue = loadedOrder.calculateProratedValue(
+          originalItem.id,
+          requestedQty,
         );
 
-        refundTotalMinor += Math.floor(proratedItemValue);
+        refundTotalMinor += proratedItemValue;
       }
     } catch (err: any) {
       if (err instanceof DomainError) throw err;

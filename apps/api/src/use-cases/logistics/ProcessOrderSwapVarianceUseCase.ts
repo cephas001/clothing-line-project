@@ -11,17 +11,24 @@ import { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepo
 import { ISwapRepository } from "@api/domain/interfaces/repositories/ISwapRepository";
 import { IPaymentRepository } from "@api/domain/interfaces/repositories/IPaymentRepository";
 import { IRefundRepository } from "@api/domain/interfaces/repositories/IRefundRepository";
-import { IMoneyAmountRepository } from "@api/domain/interfaces/repositories/IMoneyAmountRepository";
 import { ICustomerRepository } from "@api/domain/interfaces/repositories/ICustomerRepository";
+import { IPricingService } from "@api/domain/interfaces/services/IPricingService";
 import { IPaymentService } from "@api/domain/interfaces/services/IPaymentService";
+import { toPositiveQuantity } from "@api/utils/moneyUtils";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
+import { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
+import { NotificationIntent } from "@api/domain/shared/notifications";
+import { ReserveInventoryUseCase } from "@api/use-cases/inventory/ReserveInventoryUseCase";
 import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+
+/** How long a swap replacement hold stays reserved while the swap is unresolved. */
+const SWAP_RESERVATION_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Internal control-flow markers for the cumulative refund guard. They never
 // cross the use-case boundary: `claimSwapRefund` converts `...AlreadyClaimed`
@@ -75,7 +82,9 @@ export class ProcessOrderSwapVarianceUseCase {
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
     private readonly customerRepository: ICustomerRepository,
-    private readonly moneyAmountRepository: IMoneyAmountRepository,
+    private readonly pricingService: IPricingService,
+    private readonly notificationOutboxRepository: INotificationOutboxRepository,
+    private readonly reserveInventory: ReserveInventoryUseCase,
   ) {}
 
   /**
@@ -86,8 +95,9 @@ export class ProcessOrderSwapVarianceUseCase {
    *
    * Financial-integrity guarantees:
    * - The replacement price is NEVER client-supplied. It is resolved server-side
-   *   from the durable regional price (money_amount) for the order's originating
-   *   region, so both sides of the variance are computed from frozen/authoritative
+   *   through IPricingService (the single unit-price resolution seam) from the
+   *   durable regional price (money_amount) for the order's originating region,
+   *   so both sides of the variance are computed from frozen/authoritative
    *   state and the upcharge is stable across re-runs.
    * - The swap payment obligation is denominated in the order's FROZEN currency
    *   (order.currency, captured at checkout). An upcharge is never collected in
@@ -113,13 +123,24 @@ export class ProcessOrderSwapVarianceUseCase {
    *   can never both observe the same remaining balance and both dispatch. If
    *   the captured obligation cannot be resolved the refund is routed to
    *   manual review rather than issued unguarded.
+   * - L8 PART 10 — refund notification: a `refund_issued` intent is appended to
+   *   the durable outbox ONLY when the refund transitions to `dispatched`
+   *   (gateway-confirmed completion), INSIDE the same transaction that persists
+   *   that transition — never while the refund is merely claimed/`pending`
+   *   (requested but not confirmed), and never on an idempotent replay of an
+   *   already-dispatched refund. Amount/reference come from the persisted
+   *   Refund row and the order's frozen currency — never recomputed. The
+   *   deterministic discriminator is the refund's own `refundReference`.
    */
   async execute(
     input: ProcessOrderSwapVarianceInput,
   ): Promise<ProcessOrderSwapVarianceResult> {
     const orderId = (input.orderId ?? "").trim();
     const returnLineItemId = (input.returnLineItemId ?? "").trim();
-    const returnQuantity = Number(input.returnQuantity);
+    const returnQuantity = toPositiveQuantity(
+      input.returnQuantity,
+      "returnQuantity",
+    );
     const newVariantId = (input.newVariantId ?? "").trim();
     // The authenticated identity (verified JWT) is kept separate from the
     // normalized actorId: an absent actorId means GUEST, and guest requests
@@ -136,15 +157,6 @@ export class ProcessOrderSwapVarianceUseCase {
         "VALIDATION_ERROR",
         "returnLineItemId is required.",
       );
-    if (
-      !Number.isFinite(returnQuantity) ||
-      returnQuantity < ProcessOrderSwapVarianceUseCase.MIN_QUANTITY
-    ) {
-      throw new DomainError(
-        "VALIDATION_ERROR",
-        "returnQuantity must be a positive integer.",
-      );
-    }
     if (!newVariantId)
       throw new DomainError("VALIDATION_ERROR", "newVariantId is required.");
 
@@ -240,8 +252,9 @@ export class ProcessOrderSwapVarianceUseCase {
     // --- Compute original prorated value using the domain method
     let originalValueMinor: number;
     try {
-      originalValueMinor = Math.floor(
-        Number(loadedOrder.calculateProratedValue(originalItem.id, returnQuantity)),
+      originalValueMinor = loadedOrder.calculateProratedValue(
+        originalItem.id,
+        returnQuantity,
       );
     } catch (err: any) {
       this.logger.error("Failed to compute original prorated value", {
@@ -297,11 +310,9 @@ export class ProcessOrderSwapVarianceUseCase {
       );
     }
 
-    let replacementPrice: Awaited<
-      ReturnType<IMoneyAmountRepository["findRegionalPrice"]>
-    > | null = null;
+    let replacementPriceMinor: number | null = null;
     try {
-      replacementPrice = await this.moneyAmountRepository.findRegionalPrice(
+      replacementPriceMinor = await this.pricingService.getPriceForRegion(
         newVariantId,
         cart.regionId,
       );
@@ -328,13 +339,13 @@ export class ProcessOrderSwapVarianceUseCase {
       }
       throw new DomainError("INTERNAL_ERROR", "Failed to load regional price.");
     }
-    if (!replacementPrice) {
+    if (replacementPriceMinor === null) {
       throw new DomainError(
         "REGIONAL_PRICE_MISSING",
         "No authoritative regional price exists for the replacement variant.",
       );
     }
-    const newVariantPriceMinor = replacementPrice.amountMinor;
+    const newVariantPriceMinor = replacementPriceMinor;
     const newValueMinor = Math.floor(newVariantPriceMinor * returnQuantity);
     const differenceMinor = newValueMinor - originalValueMinor;
 
@@ -420,6 +431,26 @@ export class ProcessOrderSwapVarianceUseCase {
       createdBy: actorId,
     });
 
+    // --- Resolve the DURABLE swap (idempotent on the UNIQUE natural key) ------
+    // The swap id is regenerated per invocation, so the reservation anchor MUST
+    // be the persistent swap's resolved id — otherwise a retry would anchor on a
+    // different id and double-reserve. `ensureSwapExists` collides on the
+    // natural key and resolves the row committed by the first run.
+    const activeSwap = await this.ensureSwapExists(swap);
+
+    // --- Reserve the replacement BEFORE any money moves ----------------------
+    // The swap's replacement variant is held through the L9 reservation ledger
+    // (INV-I1..INV-I7), anchored on the deterministic swap id with a `swap:`
+    // scoped key, ATOMICALLY and idempotently. This guarantees:
+    //   - an upcharge is never collected (or a refund issued) for a swap whose
+    //     replacement cannot be fulfilled (fail closed on
+    //     INSUFFICIENT_INVENTORY / INSUFFICIENT_SINGLE_LOCATION_STOCK);
+    //   - a replay of the same swap request replays the SAME hold (never a
+    //     second reservation);
+    //   - the hold carries a TTL (swept by a future expiry job) so an abandoned
+    //     swap returns its units to the available pool without manual action.
+    await this.reserveSwapReplacement(activeSwap, actorId);
+
     const common = {
       order: loadedOrder,
       differenceMinor,
@@ -431,7 +462,7 @@ export class ProcessOrderSwapVarianceUseCase {
     if (differenceMinor > 0) {
       return this.collectSwapPayment({
         ...common,
-        swap,
+        swap: activeSwap,
         customerEmail: customerEmail as string,
         paymentRedirectBaseUrl,
         orderCurrency: orderCurrency as string,
@@ -439,10 +470,53 @@ export class ProcessOrderSwapVarianceUseCase {
     }
 
     if (differenceMinor < 0) {
-      return this.dispatchSwapRefund({ ...common, swap });
+      return this.dispatchSwapRefund({ ...common, swap: activeSwap });
     }
 
-    return this.recordEvenExchange({ ...common, swap });
+    return this.recordEvenExchange({ ...common, swap: activeSwap });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Replacement inventory hold (L9) — reserved BEFORE any money moves
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hold the swap's replacement variant through the L9 reservation ledger,
+   * anchored on the deterministic swap id with a `swap:`-scoped key.
+   *
+   * The reserve use case is idempotent on the deterministic key: a re-run of
+   * the same swap request replays the SAME hold (never a second reservation) and
+   * a changed quantity collides/rejects instead of double-holding. A stock
+   * shortfall fails closed (INSUFFICIENT_INVENTORY / INSUFFICIENT_SINGLE_LOCATION_STOCK)
+   * BEFORE the payment obligation or refund is created — money never moves for
+   * a swap that cannot be fulfilled (INV-I5: inventory never touches money).
+   *
+   * The hold is NOT auto-released when the swap resolves: an even-exchange or
+   * refund swap commits the replacement when it is dispatched (its units stay
+   * reserved until finalization confirms them), an upcharge stays held until
+   * payment captures and finalization confirms it, and a canceled/abandoned
+   * swap returns its units via the TTL sweep or an operator release.
+   */
+  private async reserveSwapReplacement(swap: Swap, actorId: string): Promise<void> {
+    try {
+      await this.reserveInventory.execute({
+        orderId: swap.id,
+        scope: "swap",
+        items: [{ variantId: swap.newVariantId, quantity: swap.returnQuantity }],
+        expiresAt: new Date(Date.now() + SWAP_RESERVATION_TTL_MS).toISOString(),
+        actorId,
+      });
+    } catch (err: unknown) {
+      this.logger.error("Failed to reserve swap replacement inventory", {
+        err,
+        swapId: swap.id,
+        orderId: swap.orderId,
+        newVariantId: swap.newVariantId,
+        returnQuantity: swap.returnQuantity,
+        actorId,
+      });
+      throw err;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -787,13 +861,74 @@ export class ProcessOrderSwapVarianceUseCase {
       throw this.mapGatewayError(err, "issue swap refund");
     }
 
+    // --- Resolve the customer recipient for the refund notification (best-effort) ---
+    // The financial dispatch NEVER depends on notification data: a missing or
+    // unresolvable customer only skips the refund_issued intent. The email is
+    // the customer's authoritative committed address — never a body value.
+    let customerEmail: string | null = null;
+    if (order.customerId) {
+      try {
+        const customer = await this.customerRepository.findById(order.customerId);
+        customerEmail = (customer?.email ?? "").trim() || null;
+      } catch (err: unknown) {
+        this.logger.warn(
+          "Failed to resolve customer for refund notification; skipping intent",
+          { err, orderId: order.id, refundId: refund.id, refundReference },
+        );
+      }
+    }
+
     // --- Persist the dispatched refund + swap state (second unit of work) ------
+    // The gateway confirmed the refund OUTSIDE any transaction; this unit of
+    // work durably records the dispatch. The `refund_issued` notification
+    // intent is appended INSIDE the same transaction (L8 PART 10): it commits
+    // atomically with the dispatched transition, so the customer is only ever
+    // told "refund completed" AFTER the gateway-confirmed dispatch is durable,
+    // and a crash after commit but before enqueue cannot lose it (the outbox
+    // sweep relays later). The recipient is resolved best-effort above; an
+    // unresolvable recipient only skips the intent — it never blocks the
+    // financial dispatch.
     try {
       await this.transactionManager.execute(async () => {
         refund.markDispatched({ providerRefundReference });
         await this.refundRepository.save(refund);
         activeSwap.markRefundDispatched();
         await this.swapRepository.save(activeSwap);
+
+        if (customerEmail && order.currency) {
+          const refundIssuedIntent: NotificationIntent = {
+            type: "refund_issued",
+            payload: {
+              recipient: { email: customerEmail },
+              order: {
+                orderId: order.id,
+                cartId: order.cartId,
+                customerId: order.customerId,
+                currency: order.currency,
+                createdAt: order.createdAt,
+              },
+              refundId: refund.id,
+              refundReference: refund.refundReference,
+              providerRefundReference: refund.providerRefundReference ?? null,
+              money: {
+                currency: order.currency,
+                amountMinor: refund.amountMinor,
+              },
+              reason: refund.reason ?? null,
+              // The durable dispatch timestamp — the moment the refund became
+              // "completed", never a live "now" at send.
+              issuedAt: new Date().toISOString(),
+            },
+          };
+          // discriminator = refundReference: deterministic per refund, so the
+          // same refund can never be notified twice and distinct refunds for
+          // the same order never collide.
+          await this.notificationOutboxRepository.append(
+            this.idGenerator.generate(),
+            refundIssuedIntent,
+            { discriminator: refund.refundReference },
+          );
+        }
       });
     } catch (err: unknown) {
       // Refund WAS issued but its dispatch was not recorded. The refund row is

@@ -18,9 +18,8 @@ import type { ICryptographyService } from "@api/domain/interfaces/services/ICryp
 import type { IDatabaseManagementService } from "@api/domain/interfaces/services/IDatabaseManagementService";
 import type { IHashingService } from "@api/domain/interfaces/services/IHashingService";
 import type { IInsuranceService } from "@api/domain/interfaces/services/IInsuranceService";
-import type { IInventoryLocationService } from "@api/domain/interfaces/services/IInventoryLocationService";
 import type { ILogisticsService } from "@api/domain/interfaces/services/ILogisticsService";
-import type { INotificationService } from "@api/domain/interfaces/services/INotificationService";
+import type { INotificationService } from "@api/domain/shared/notifications";
 import type { IPaymentService } from "@api/domain/interfaces/services/IPaymentService";
 import type { IPricingService } from "@api/domain/interfaces/services/IPricingService";
 import type { IQueueService } from "@api/domain/interfaces/services/IQueueService";
@@ -61,7 +60,6 @@ export interface ExternalServiceDependencies {
   insuranceService?: IInsuranceService;
   taxCalculationService?: ITaxCalculationService;
   databaseManagementService?: IDatabaseManagementService;
-  inventoryLocationService?: IInventoryLocationService;
 }
 
 export interface UnwiredUseCase {

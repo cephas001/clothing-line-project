@@ -13,9 +13,17 @@ import {
 } from "#domain/interfaces/shared/errors/RepositoryError";
 import { Cart } from "@api/domain/entities/Cart";
 import { Payment } from "@api/domain/entities/Payment";
+import { ReserveInventoryUseCase } from "@api/use-cases/inventory/ReserveInventoryUseCase";
 import { buildOrderShippingSnapshot } from "@api/domain/shared/shippingSnapshot";
 import { ITransactionManager } from "#domain/interfaces/shared/ITransactionManager";
 import { IRegionRepository } from "#domain/interfaces/repositories/IRegionRepository";
+
+/**
+ * How long a checkout hold may stay reserved before an expiry sweep frees it.
+ * A customer who abandons mid-checkout is covered until the sweep runs; a
+ * successful checkout confirms the units at finalization.
+ */
+const CHECKOUT_RESERVATION_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Use case: initialize a payment session for a checkout cart.
@@ -76,6 +84,7 @@ export class InitializePaymentSessionUseCase {
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
     private readonly regionRepository: IRegionRepository,
+    private readonly reserveInventory: ReserveInventoryUseCase,
   ) {}
 
   async execute(
@@ -308,6 +317,37 @@ export class InitializePaymentSessionUseCase {
     let payment: Payment;
     try {
       payment = await this.transactionManager.execute(async () => {
+        // Reserve inventory for the CHARGED variant lines DETERMINISTICALLY
+        // (L9 Part 3). The reservation anchors on the deterministic payment
+        // reference (which equals `transactionReference` at finalization) and
+        // commits ATOMICALLY with the obligation claim — a claim failure can
+        // never leave an orphaned hold, and an INSUFFICIENT_* failure fails
+        // the whole claim (never a partially-held obligation). Custom-only
+        // carts (no variant-backed lines) skip the reservation entirely and
+        // dispatch through the legacy path.
+        const variantLines = cart.snapshotChargedLineItems().filter(
+          (line): line is {
+            id: string;
+            variantId: string;
+            quantity: number;
+            unitPriceMinor: number;
+            title: string | null;
+          } => line.variantId !== null,
+        );
+        if (variantLines.length > 0) {
+          await this.reserveInventory.execute({
+            orderId: paymentReference,
+            items: variantLines.map((line) => ({
+              variantId: line.variantId,
+              quantity: line.quantity,
+            })),
+            expiresAt: new Date(
+              Date.now() + CHECKOUT_RESERVATION_TTL_MS,
+            ).toISOString(),
+            actorId,
+          });
+        }
+
         const intent = new Payment({
           id: this.idGenerator.generate(),
           obligationType: "checkout",
@@ -365,6 +405,13 @@ export class InitializePaymentSessionUseCase {
           );
         }
       } else {
+        // A domain-level failure inside the claim (e.g. INSUFFICIENT_INVENTORY
+        // or INSUFFICIENT_SINGLE_LOCATION_STOCK from the atomic reservation
+        // nested in this unit of work) must propagate with its exact code —
+        // never be masked as an INTERNAL_ERROR.
+        if (err instanceof DomainError) {
+          throw err;
+        }
         this.logger.error("Failed to claim payment obligation", {
           err,
           cartId,

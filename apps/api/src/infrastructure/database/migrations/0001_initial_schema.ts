@@ -113,20 +113,6 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn("title", "text", (col) => col.notNull())
     .execute();
 
-  await db.schema
-    .createTable("tax_category")
-    .addColumn("id", "text", (col) => col.primaryKey())
-    .addColumn("name", "text", (col) => col.notNull())
-    .addColumn("region_id", "text", (col) =>
-      col.references("region.id").notNull(),
-    )
-    .addColumn("rate", "integer", (col) => col.notNull())
-    .addUniqueConstraint("tax_category_name_region_unique", [
-      "name",
-      "region_id",
-    ])
-    .execute();
-
   // ---------------------------------------------------------------------------
   // Customers & auth
   // ---------------------------------------------------------------------------
@@ -620,7 +606,6 @@ export async function down(db: Kysely<any>): Promise<void> {
     "cart",
     "customer",
     "role",
-    "tax_category",
     "collection",
     "category",
     "money_amount",

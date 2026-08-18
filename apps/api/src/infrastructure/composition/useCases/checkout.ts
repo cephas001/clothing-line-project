@@ -16,13 +16,15 @@ import { ProcessDeadLetterQueueUseCase } from "@api/use-cases/checkout/ProcessDe
 import { ProcessFraudAlertEventUseCase } from "@api/use-cases/checkout/ProcessFraudAlertEventUseCase";
 import { QueuePaymentEventUseCase } from "@api/use-cases/checkout/QueuePaymentEventUseCase";
 import { ReconcileOrphanedLocksUseCase } from "@api/use-cases/checkout/ReconcileOrphanedLocksUseCase";
-import { ReserveInventoryPessimisticUseCase } from "@api/use-cases/checkout/ReserveInventoryPessimisticUseCase";
 import { ResetFailedPaymentInitializationUseCase } from "@api/use-cases/checkout/ResetFailedPaymentInitializationUseCase";
 import { RetrieveDynamicShippingQuotesUseCase } from "@api/use-cases/checkout/RetrieveDynamicShippingQuotesUseCase";
 import { SelectShippingOptionUseCase } from "@api/use-cases/checkout/SelectShippingOptionUseCase";
 import { SetCheckoutShippingAddressUseCase } from "@api/use-cases/checkout/SetCheckoutShippingAddressUseCase";
 import { VerifyPaymentEventSignatureUseCase } from "@api/use-cases/checkout/VerifyPaymentEventSignatureUseCase";
 import { VerifyPaymentEventUseCase } from "@api/use-cases/checkout/VerifyPaymentEventUseCase";
+import { ConfirmInventoryReservationUseCase } from "@api/use-cases/inventory/ConfirmInventoryReservationUseCase";
+import { ReleaseInventoryReservationUseCase } from "@api/use-cases/inventory/ReleaseInventoryReservationUseCase";
+import { ReserveInventoryUseCase } from "@api/use-cases/inventory/ReserveInventoryUseCase";
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface CheckoutUseCases {
@@ -34,7 +36,6 @@ export interface CheckoutUseCases {
   processFraudAlertEvent?: ProcessFraudAlertEventUseCase;
   queuePaymentEvent: QueuePaymentEventUseCase;
   reconcileOrphanedLocks?: ReconcileOrphanedLocksUseCase;
-  reserveInventoryPessimistic: ReserveInventoryPessimisticUseCase;
   resetFailedPaymentInitialization: ResetFailedPaymentInitializationUseCase;
   retrieveDynamicShippingQuotes?: RetrieveDynamicShippingQuotesUseCase;
   selectShippingOption: SelectShippingOptionUseCase;
@@ -49,6 +50,39 @@ export function buildCheckoutUseCases(
 ): CheckoutUseCases {
   const { auditLogService, idGenerator, logger, transactionManager } = deps;
 
+  // The L9 inventory orchestration use cases are re-composed HERE (in addition
+  // to their own factory) because the checkout flow orchestrates them directly:
+  // InitializePaymentSession reserves atomically inside its obligation-claim
+  // unit, FinalizeOrderTransaction confirms inside its order-create unit (and
+  // freezes the sourcing snapshot), and ResetFailedPaymentInitialization
+  // releases inside its reset unit. Instances are stateless, so the duplication
+  // with buildInventoryUseCases is harmless.
+  const reserveInventory = new ReserveInventoryUseCase(
+    deps.inventoryLocationRepository,
+    deps.inventoryLevelRepository,
+    deps.inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const confirmInventoryReservation = new ConfirmInventoryReservationUseCase(
+    deps.inventoryLevelRepository,
+    deps.inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const releaseInventoryReservation = new ReleaseInventoryReservationUseCase(
+    deps.inventoryLevelRepository,
+    deps.inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+
   const finalizeOrderTransaction = new FinalizeOrderTransactionUseCase(
     deps.orderRepository,
     deps.transactionRepository,
@@ -58,6 +92,10 @@ export function buildCheckoutUseCases(
     idGenerator,
     logger,
     transactionManager,
+    deps.notificationOutboxRepository,
+    confirmInventoryReservation,
+    deps.inventoryReservationRepository,
+    deps.inventoryLocationRepository,
   );
   const processDeadLetterQueue = new ProcessDeadLetterQueueUseCase(
     deps.queueService,
@@ -67,13 +105,6 @@ export function buildCheckoutUseCases(
   );
   const queuePaymentEvent = new QueuePaymentEventUseCase(
     deps.queueService,
-    auditLogService,
-    idGenerator,
-    logger,
-  );
-  const reserveInventoryPessimistic = new ReserveInventoryPessimisticUseCase(
-    deps.variantRepository,
-    transactionManager,
     auditLogService,
     idGenerator,
     logger,
@@ -138,6 +169,7 @@ export function buildCheckoutUseCases(
       logger,
       transactionManager,
       deps.regionRepository,
+      reserveInventory,
     );
   } else {
     report.unwiredUseCase(
@@ -217,7 +249,9 @@ export function buildCheckoutUseCases(
   );
 
   // Releases the shipping/payment mutation lock after a failed/abandoned
-  // payment attempt. Depends only on core dependencies, so it is always wired.
+  // payment attempt, and releases the checkout inventory reservation anchored
+  // on the obligation's deterministic reference back to the available pool.
+  // Depends only on core dependencies, so it is always wired.
   const resetFailedPaymentInitialization =
     new ResetFailedPaymentInitializationUseCase(
       deps.cartRepository,
@@ -226,6 +260,7 @@ export function buildCheckoutUseCases(
       idGenerator,
       logger,
       transactionManager,
+      releaseInventoryReservation,
     );
 
   const taxService = deps.externalServices?.taxCalculationService;
@@ -250,7 +285,6 @@ export function buildCheckoutUseCases(
     "FinalizeOrderTransactionUseCase",
     "ProcessDeadLetterQueueUseCase",
     "QueuePaymentEventUseCase",
-    "ReserveInventoryPessimisticUseCase",
     "ResetFailedPaymentInitializationUseCase",
     "SelectShippingOptionUseCase",
     "VerifyPaymentEventSignatureUseCase",
@@ -266,7 +300,6 @@ export function buildCheckoutUseCases(
     processFraudAlertEvent,
     queuePaymentEvent,
     reconcileOrphanedLocks,
-    reserveInventoryPessimistic,
     resetFailedPaymentInitialization,
     retrieveDynamicShippingQuotes,
     selectShippingOption,

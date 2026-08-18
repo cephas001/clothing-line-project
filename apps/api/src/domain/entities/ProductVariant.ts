@@ -103,6 +103,9 @@ export class ProductVariant {
    * - Deducts quantity from inventory after validating the request.
    * - Throws OUT_OF_STOCK if the deduction would oversell and backorders are disallowed.
    * - Increments internal version for optimistic concurrency.
+   * - NOT part of the L9 reservation path: checkout reservations use atomic
+   *   conditional UPDATEs on `inventory_level` (IInventoryLevelRepository),
+   *   never this variant-level counter. Retained as a domain primitive.
    */
   public deductInventory(quantity: number): void {
     if (!Number.isInteger(quantity) || quantity < 1) {

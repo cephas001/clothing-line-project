@@ -10,6 +10,10 @@ import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionM
 import { Order } from "@api/domain/entities/Order";
 import { OrderEdit } from "@api/domain/entities/OrderEdit";
 import {
+  toPositiveQuantity,
+  toSignedSafeInteger,
+} from "@api/utils/moneyUtils";
+import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
@@ -88,13 +92,7 @@ export class ProposeOrderEditUseCase {
           `Change at index ${idx} has invalid type.`,
         );
       }
-      const qty = Number(ch.quantity);
-      if (!Number.isFinite(qty) || qty < ProposeOrderEditUseCase.MIN_QUANTITY) {
-        throw new DomainError(
-          "VALIDATION_ERROR",
-          `Change at index ${idx} has invalid quantity.`,
-        );
-      }
+      toPositiveQuantity(ch.quantity, `Change at index ${idx} quantity`);
       if ((ch.type === "remove" || ch.type === "update") && !ch.lineItemId) {
         throw new DomainError(
           "VALIDATION_ERROR",
@@ -173,11 +171,13 @@ export class ProposeOrderEditUseCase {
       );
     }
 
-    // --- Compute difference using domain method
+    // --- Compute difference using domain method (exact integer minor units)
     let differenceDueMinor: number;
     try {
-      differenceDueMinor = Math.floor(Number(order.calculateEditVariance(changes)));
-      if (!Number.isFinite(differenceDueMinor)) differenceDueMinor = 0;
+      differenceDueMinor = toSignedSafeInteger(
+        order.calculateEditVariance(changes),
+        "Order edit variance",
+      );
     } catch (err: unknown) {
       this.logger.error("Failed to compute edit variance", {
         err,
@@ -201,12 +201,12 @@ export class ProposeOrderEditUseCase {
       createdBy: actorId,
       createdAt: startedAt,
       status: "proposed",
-      differenceDueMinor: Math.floor(differenceDueMinor),
+      differenceDueMinor,
       proposedChanges: changes.map((c) => ({
         type: c.type,
         lineItemId: c.lineItemId ?? null,
         newVariantId: c.newVariantId ?? null,
-        quantity: Math.floor(Number(c.quantity)),
+        quantity: toPositiveQuantity(c.quantity, "Change quantity"),
       })),
     });
 

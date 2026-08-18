@@ -15,8 +15,10 @@
 import { Order } from "@api/domain/entities/Order";
 import type {
   OrderShippingSnapshot,
+  OrderSourcingSnapshot,
   PromotionSnapshot,
 } from "@api/domain/shared/contracts";
+import { toOrderSourcingSnapshot } from "@api/domain/shared/sourcingSnapshot";
 import type { IOrderRepository } from "@api-domain-interfaces/repositories/IOrderRepository";
 import { TransactionContext } from "../transaction/TransactionContext";
 import { toRepositoryError } from "./errorMapping";
@@ -44,6 +46,7 @@ type OrderRow = {
   fulfillment_halted_at: string | null;
   promotion_snapshot: unknown;
   shipping_snapshot: unknown;
+  sourcing_snapshot: unknown;
   created_at: string;
 };
 
@@ -127,6 +130,10 @@ function toShippingSnapshot(value: unknown): OrderShippingSnapshot | null {
   };
 }
 
+function toSourcingSnapshot(value: unknown): OrderSourcingSnapshot | null {
+  return toOrderSourcingSnapshot(value);
+}
+
 function toDomain(
   row: OrderRow,
   lineItemRows: OrderLineItemRow[],
@@ -155,6 +162,7 @@ function toDomain(
     fulfillmentHaltedAt: row.fulfillment_halted_at,
     promotionSnapshot: toPromotionSnapshot(row.promotion_snapshot),
     shippingSnapshot: toShippingSnapshot(row.shipping_snapshot),
+    sourcingSnapshot: toSourcingSnapshot(row.sourcing_snapshot),
     lineItems: lineItemRows.map((li) => ({
       id: li.id,
       variantId: li.variant_id,
@@ -283,6 +291,9 @@ export class PostgresOrderRepository implements IOrderRepository {
           shipping_snapshot: order.shippingSnapshot
             ? JSON.stringify(order.shippingSnapshot)
             : null,
+          sourcing_snapshot: order.sourcingSnapshot
+            ? JSON.stringify(order.sourcingSnapshot)
+            : null,
           created_at: order.createdAt,
         })
         .onConflict((oc) =>
@@ -311,6 +322,9 @@ export class PostgresOrderRepository implements IOrderRepository {
               : null,
             shipping_snapshot: order.shippingSnapshot
               ? JSON.stringify(order.shippingSnapshot)
+              : null,
+            sourcing_snapshot: order.sourcingSnapshot
+              ? JSON.stringify(order.sourcingSnapshot)
               : null,
           }),
         )

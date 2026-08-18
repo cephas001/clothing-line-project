@@ -80,7 +80,29 @@ export type ErrorCode =
   // Resources
   | "RESOURCE_NOT_FOUND"
   | "CART_NOT_FOUND"
-  | "PRODUCT_NOT_FOUND";
+  | "PRODUCT_NOT_FOUND"
+
+  // Inventory / sourcing (L9)
+  /**
+   * A single per-(variant, location) level cannot satisfy a requested
+   * reservation quantity — either the level row is missing entirely or
+   * available_quantity < requested quantity. The reservation was NOT consumed;
+   * the caller may surface stock insufficiency or abort the checkout. Never a
+   * second payment attempt.
+   */
+  | "INSUFFICIENT_INVENTORY"
+  /**
+   * Deterministic single-origin sourcing found NO active location with enough
+   * available stock. The sourcing decision never splits across locations, even
+   * when the caller allows split shipments.
+   */
+  | "INSUFFICIENT_SINGLE_LOCATION_STOCK"
+  /**
+   * Sourcing failed for a non-availability reason (repository/infra failure
+   * while loading locations or levels). Distinct from INSUFFICIENT_* codes,
+   * which are deterministic business outcomes.
+   */
+  | "SOURCING_FAILED";
 
 export class DomainError extends Error {
   readonly code: ErrorCode;

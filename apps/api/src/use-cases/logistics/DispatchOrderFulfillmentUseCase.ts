@@ -2,7 +2,9 @@
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepository";
 import { IFulfillmentRepository } from "@api/domain/interfaces/repositories/IFulfillmentRepository";
+import { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
 import { ILogisticsService } from "@api/domain/interfaces/services/ILogisticsService";
+import type { NotificationIntent } from "@api/domain/shared/notifications";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
@@ -35,6 +37,11 @@ import {
  *   service, destination, parcel items) recorded at checkout. Dispatch NEVER
  *   reads today's Cart shipping selection, NEVER calls Shipbubble rates, and
  *   NEVER recalculates shipping.
+ * - The shipment ORIGIN comes EXCLUSIVELY from `Order.sourcingSnapshot.origin`
+ *   — the frozen provider-neutral origin (name/email/phone/address + the
+ *   application location id) recorded at finalization from the primary
+ *   inventory location's LOCAL sender record. The logistics adapter consumes it
+ *   as authoritative historical context and NEVER decides an origin itself.
  * - If the snapshot is missing or structurally invalid for a finalized order,
  *   the dispatch FAILS CLOSED with INVALID_STATE.
  *
@@ -57,6 +64,12 @@ import {
  * - If enrichment/persistence fails AFTER the provider created the shipment,
  *   the outcome is classified as requires-reconciliation (the provider holds a
  *   shipment we can no longer describe); a cancel is NOT issued.
+ *
+ * NOTIFICATION (L8 PART 7): a `shipment_dispatched` intent is appended INSIDE
+ * the success-persist transaction (Rule D) — it commits atomically with the
+ * durable `dispatched` marker, so it fires only when the shipment is durably
+ * dispatched, never on replay/requires_reconciliation. The recipient is the
+ * FROZEN `Order.shippingSnapshot.destination.email` — never a webhook/body.
  *
  * TRANSACTION BOUNDARY (PART 5): the provider call is NEVER inside a database
  * transaction. The exact ordering is:
@@ -110,6 +123,7 @@ export class DispatchOrderFulfillmentUseCase {
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
+    private readonly notificationOutboxRepository: INotificationOutboxRepository,
   ) {}
 
   async execute(
@@ -265,8 +279,13 @@ export class DispatchOrderFulfillmentUseCase {
     }
 
     // --- Rule C: exactly one provider create attempt --------------------------
-    // Build the request VERBATIM from the frozen snapshot. The logistics adapter
-    // consumes it as-is and never chooses a courier, price, address or parcel.
+    // Build the request VERBATIM from the frozen snapshots. The logistics adapter
+    // consumes it as-is and never chooses a courier, price, address or parcel —
+    // and never decides the origin. The origin is the FROZEN
+    // `Order.sourcingSnapshot.origin` (resolved from the primary location's
+    // LOCAL sender record at finalization); it is null for legacy/custom-only
+    // orders that carried no reservations, in which case dispatch proceeds
+    // without an origin (the adapter logs the absence; it never invents one).
     const labelRequest: ShippingLabelRequest = {
       orderId: order.id,
       requestToken: snapshot.requestToken,
@@ -274,6 +293,7 @@ export class DispatchOrderFulfillmentUseCase {
       destination: snapshot.destination,
       parcelItems: snapshot.parcelItems,
       dimensions: snapshot.dimensions ?? undefined,
+      origin: order.sourcingSnapshot?.origin ?? null,
     };
 
     // Durably claim the attempt as `dispatch_pending` BEFORE the POST, so a
@@ -284,6 +304,10 @@ export class DispatchOrderFulfillmentUseCase {
       orderId: order.id,
       trackingNumber: "",
       status: "dispatch_pending",
+      // Freeze which inventory location the units came from (the frozen
+      // snapshot's primary location) so the fulfillment record is
+      // self-contained and never depends on the mutable inventory tables.
+      sourcingLocationId: order.sourcingSnapshot?.primaryLocationId ?? undefined,
       createdAt: nowIso,
       metadata: {
         dispatchAttempt: {
@@ -456,6 +480,48 @@ export class DispatchOrderFulfillmentUseCase {
         order.addFulfillment(dispatchMarker);
         order.setFulfillmentStatus("fulfilled", { updatedAt: nowIso });
         await this.orderRepository.save(order);
+        // L8 PART 7: append the shipment_dispatched intent INSIDE the same
+        // transaction so it commits atomically with the durable `dispatched`
+        // marker + tracking info. The recipient is the FROZEN checkout
+        // snapshot address (never a webhook). A duplicate
+        // (shipment_dispatched, fulfillmentId) append collides on the unique
+        // index, so a concurrent/raced dispatch can never double-notify.
+        const shipmentIntent: NotificationIntent = {
+          type: "shipment_dispatched",
+          payload: {
+            recipient: {
+              email: snapshot.destination.email,
+              name: snapshot.destination.name ?? null,
+            },
+            order: {
+              orderId: order.id,
+              cartId: order.cartId,
+              customerId: order.customerId,
+              currency: order.currency,
+              createdAt: order.createdAt,
+            },
+            fulfillmentId,
+            providerShipmentId: dispatchMarker.providerShipmentId ?? "",
+            trackingNumber: dispatchMarker.trackingNumber,
+            courier:
+              typeof dispatchMarker.courier === "string"
+                ? dispatchMarker.courier
+                : null,
+            serviceLevel:
+              typeof dispatchMarker.serviceLevel === "string"
+                ? dispatchMarker.serviceLevel
+                : null,
+            labelUrl:
+              typeof dispatchMarker.labelUrl === "string"
+                ? dispatchMarker.labelUrl
+                : null,
+            dispatchedAt: nowIso,
+          },
+        };
+        await this.notificationOutboxRepository.append(
+          this.idGenerator.generate(),
+          shipmentIntent,
+        );
       });
     } catch (err: unknown) {
       const repoErr = err as RepositoryError | undefined;

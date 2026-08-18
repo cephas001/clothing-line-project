@@ -153,14 +153,43 @@ export class Promotion {
   /**
    * computeDiscountAmount
    * - Computes the discount amount (in minor units) for a given subtotal.
-   * - Percentage discounts use basis points; fixed discounts are capped at subtotal.
+   * - This is the SINGLE authoritative promotion application path: it enforces
+   *   minimum spend (strictly — a subtotal below `minimumSpendMinor` is NOT
+   *   eligible and throws instead of applying a discount) and computes the
+   *   discount with DETERMINISTIC floor division toward zero in integer minor
+   *   units only (no floats), capped at the subtotal so a discount can never
+   *   exceed the payable base.
+   * - Percentage discounts use basis points; fixed discounts are capped at the
+   *   subtotal (discount <= subtotal).
+   * - Fail-closed: a non-integer or negative subtotal throws a DomainError
+   *   instead of being silently coerced, so invalid money never reaches the
+   *   authoritative checkout breakdown.
    */
   public computeDiscountAmount(subtotalMinor: number): number {
-    const subtotal = Math.max(0, Math.floor(Number(subtotalMinor) || 0));
-    if (this._discountType === "percentage") {
-      return Math.floor((subtotal * this._discountValueMinor) / 10000);
+    if (!Number.isSafeInteger(subtotalMinor) || subtotalMinor < 0) {
+      throw new DomainError(
+        "NEGATIVE_AMOUNT",
+        "Subtotal must be a non-negative safe integer in minor units.",
+      );
     }
-    return Math.min(this._discountValueMinor, subtotal);
+    if (subtotalMinor < this._minimumSpendMinor) {
+      throw new DomainError(
+        "INVALID_OPERATION",
+        "Cart subtotal does not meet the promotion's minimum spend.",
+      );
+    }
+    if (this._discountType === "percentage") {
+      const product = subtotalMinor * this._discountValueMinor;
+      if (!Number.isSafeInteger(product)) {
+        throw new DomainError(
+          "INTERNAL_ERROR",
+          "Discount calculation overflow; the subtotal is too large.",
+        );
+      }
+      const discount = Math.floor(product / 10000);
+      return Math.min(discount, subtotalMinor);
+    }
+    return Math.min(this._discountValueMinor, subtotalMinor);
   }
 
   // -------------------------

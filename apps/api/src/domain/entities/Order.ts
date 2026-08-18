@@ -1,8 +1,16 @@
 // apps/api/src/domain/entities/Order.ts
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
-import { OrderShippingSnapshot, PromotionSnapshot } from "@api/domain/shared/contracts";
+import {
+  OrderShippingSnapshot,
+  OrderSourcingSnapshot,
+  PromotionSnapshot,
+} from "@api/domain/shared/contracts";
 import { JsonObject } from "@api/domain/shared/json";
+import {
+  toNonNegativeMinorUnits,
+  toPositiveQuantity,
+} from "@api/utils/moneyUtils";
 
 /**
  * Domain types used by Order
@@ -61,7 +69,14 @@ export interface OrderProps {
   subtotalMinor?: number;
   /** Frozen promotion discount at order time, in minor units. */
   discountMinor?: number;
-  /** Frozen regional tax at order time, in minor units. */
+  /**
+   * Frozen regional tax at order time, in minor units.
+   *
+   * HISTORICAL TAX SNAPSHOT DECISION: this AMOUNT is the authoritative frozen
+   * record; the tax RATE is intentionally NOT stored or reconstructed from live
+   * `region.tax_rate` (INV-7). Today's catalog changes can never alter a
+   * finalized order.
+   */
   taxMinor?: number;
   /** Frozen shipping amount at order time, in minor units. */
   shippingMinor?: number;
@@ -89,6 +104,14 @@ export interface OrderProps {
    * return flows are self-contained and never depend on the mutable cart.
    */
   shippingSnapshot?: OrderShippingSnapshot | null;
+  /**
+   * Frozen provider-neutral sourcing snapshot (variant -> location ->
+   * quantity, primary location, shipment origin) recorded at finalization so
+   * the dispatch/RMA flows are self-contained and never depend on the mutable
+   * inventory tables or a provider decision. Null for legacy/custom-only
+   * orders that carried no reservations.
+   */
+  sourcingSnapshot?: OrderSourcingSnapshot | null;
 }
 
 /**
@@ -150,6 +173,7 @@ export class Order {
   private _pendingReturns: JsonObject[];
   public promotionSnapshot: PromotionSnapshot | null;
   public shippingSnapshot: OrderShippingSnapshot | null;
+  public sourcingSnapshot: OrderSourcingSnapshot | null;
 
   // -------------------------
   // Constructor and validation
@@ -227,6 +251,7 @@ export class Order {
       : [];
     this.promotionSnapshot = props.promotionSnapshot ?? null;
     this.shippingSnapshot = props.shippingSnapshot ?? null;
+    this.sourcingSnapshot = props.sourcingSnapshot ?? null;
   }
 
   // -------------------------
@@ -425,30 +450,37 @@ export class Order {
   public calculateEditVariance(changes: ProposedChangeType[]): number {
     let variance = 0;
     for (const ch of changes) {
+      const quantity = toPositiveQuantity(ch.quantity, "Change quantity");
       if (ch.type === "add") {
         const variant = this._availableVariants.find(
           (v) => String(v.id) === String(ch.newVariantId),
         );
-        const price = variant ? Math.floor(Number(variant.unitPriceMinor)) : 0;
-        variance += price * Math.floor(Number(ch.quantity));
+        const price = variant
+          ? toNonNegativeMinorUnits(variant.unitPriceMinor, "Variant unit price")
+          : 0;
+        variance += price * quantity;
       } else if (ch.type === "remove") {
         const line = this._lineItems.find(
           (li) => String(li.id) === String(ch.lineItemId),
         );
-        const price = line ? Math.floor(Number(line.unitPriceMinor)) : 0;
-        variance -= price * Math.floor(Number(ch.quantity));
+        const price = line
+          ? toNonNegativeMinorUnits(line.unitPriceMinor, "Line unit price")
+          : 0;
+        variance -= price * quantity;
       } else if (ch.type === "update") {
         const line = this._lineItems.find(
           (li) => String(li.id) === String(ch.lineItemId),
         );
-        const oldPrice = line ? Math.floor(Number(line.unitPriceMinor)) : 0;
+        const oldPrice = line
+          ? toNonNegativeMinorUnits(line.unitPriceMinor, "Line unit price")
+          : 0;
         const newVariant = this._availableVariants.find(
           (v) => String(v.id) === String(ch.newVariantId),
         );
         const newPrice = newVariant
-          ? Math.floor(Number(newVariant.unitPriceMinor))
+          ? toNonNegativeMinorUnits(newVariant.unitPriceMinor, "Variant unit price")
           : oldPrice;
-        variance += (newPrice - oldPrice) * Math.floor(Number(ch.quantity));
+        variance += (newPrice - oldPrice) * quantity;
       }
     }
     return variance;
@@ -471,8 +503,11 @@ export class Order {
         this._lineItems.push({
           id: ch.lineItemId ?? new Date().getTime().toString(),
           variantId: ch.newVariantId ?? null,
-          quantity: Math.floor(Number(ch.quantity)),
-          unitPriceMinor: Math.floor(Number(ch.unitPriceMinor ?? 0)),
+          quantity: toPositiveQuantity(ch.quantity, "Change quantity"),
+          unitPriceMinor: toNonNegativeMinorUnits(
+            ch.unitPriceMinor ?? 0,
+            "Change unit price",
+          ),
         });
       } else if (ch.type === "remove") {
         this._lineItems = this._lineItems.filter(
@@ -485,9 +520,12 @@ export class Order {
         if (line) {
           if (ch.newVariantId) line.variantId = ch.newVariantId;
           if (typeof ch.quantity !== "undefined")
-            line.quantity = Math.floor(Number(ch.quantity));
+            line.quantity = toPositiveQuantity(ch.quantity, "Change quantity");
           if (typeof ch.unitPriceMinor !== "undefined")
-            line.unitPriceMinor = Math.floor(Number(ch.unitPriceMinor));
+            line.unitPriceMinor = toNonNegativeMinorUnits(
+              ch.unitPriceMinor,
+              "Change unit price",
+            );
         }
       }
     }

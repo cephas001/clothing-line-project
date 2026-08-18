@@ -88,25 +88,35 @@ export class SetCheckoutShippingAddressUseCase {
       throw new DomainError("CART_NOT_FOUND", "Cart session not found.");
     }
 
-    // --- Prepare persistence operation
-    const persist = async () => {
-      cart.setShippingAddress(shippingAddress);
+    // --- Apply the address and recalculate the AUTHORITATIVE tax --------------
+    // The tax service resolves the region rate and applies the single
+    // authoritative tax math (calculateTaxAmountMinor) over the gross subtotal.
+    // It performs no writes, so it runs OUTSIDE the transactional unit of work.
+    // Domain errors from the tax service (e.g. REGION_NOT_FOUND) are preserved;
+    // any unexpected failure fails closed as INTERNAL_ERROR.
+    cart.setShippingAddress(shippingAddress);
 
-      // Recalculate taxes using the tax service
-      let applicableTax;
-      try {
-        applicableTax = await this.taxService.calculateTaxForAddress(cart);
-      } catch (err: unknown) {
-        this.logger.error(
-          "Tax service failed while calculating tax for shipping address",
-          { err, cartId },
-        );
+    let applicableTax: number;
+    try {
+      applicableTax = await this.taxService.calculateTaxForAddress(cart);
+    } catch (err: unknown) {
+      this.logger.error(
+        "Tax service failed while calculating tax for shipping address",
+        { err, cartId },
+      );
+      if (err instanceof DomainError) {
         throw err;
       }
+      throw new DomainError(
+        "INTERNAL_ERROR",
+        "Failed to calculate taxes for the provided shipping address.",
+      );
+    }
 
-      cart.applyTax(applicableTax);
+    cart.applyTax(applicableTax);
 
-      // Persist cart
+    // --- Persist inside a transactional unit of work
+    const persist = async () => {
       await this.cartRepository.save(cart);
     };
 
@@ -141,19 +151,6 @@ export class SetCheckoutShippingAddressUseCase {
       return;
     } catch (err: unknown) {
       const repoErr = err as RepositoryError | undefined;
-      const unknownErr = err as { name?: string; message?: string } | undefined;
-
-      // If the error originated from tax service (not a RepositoryError), map accordingly
-      if (!repoErr && unknownErr?.name && unknownErr.message) {
-        this.logger.error(
-          "Failed to calculate or apply tax while setting shipping address",
-          { err, cartId },
-        );
-        throw new DomainError(
-          "INTERNAL_ERROR",
-          "Failed to calculate taxes for the provided shipping address.",
-        );
-      }
 
       if (repoErr?.code === RepositoryErrorCode.CONNECTION) {
         this.logger.error(

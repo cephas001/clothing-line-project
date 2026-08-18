@@ -24,6 +24,7 @@ import {
   CartPromotionSnapshot,
   DraftOrderItem,
   OrderShippingSnapshot,
+  OrderSourcingSnapshot,
   PromotionSnapshot,
   ShippingQuote,
 } from "@api/domain/shared/contracts";
@@ -34,6 +35,7 @@ import { OrderEditChange } from "@api/domain/entities/OrderEdit";
 import { PromotionDiscountType } from "@api/domain/entities/Promotion";
 import { QuoteStatus } from "@api/domain/entities/Quote";
 import { ReturnAuthorizationItem } from "@api/domain/entities/ReturnAuthorization";
+import { NotificationIntent } from "@api/domain/shared/notifications";
 
 /**
  * JSONB column: reads return the domain JSON shape `T`; writes accept either
@@ -85,6 +87,80 @@ export interface Database {
     amount_minor: number;
   };
 
+  /**
+   * L9 — authoritative fulfillment/sourcing node. The LOCAL sender/origin
+   * record is the source of truth for a node's shipment origin (Shipbubble
+   * NEVER becomes the source of truth); `provider_address_code` is an
+   * adapter-owned cache of the provider's validated code, never a business
+   * input.
+   */
+  inventory_location: {
+    id: string;
+    /** Normalized unique node code (e.g. "LAGOS-WH"). */
+    code: string;
+    name: string;
+    is_active: boolean;
+    /** Verified sender/origin record (name/email/phone/address); JSONB. */
+    sender_address: JsonB;
+    /** Provider-validated sender address code; adapter-owned cache. */
+    provider_address_code: string | null;
+    /**
+     * Deterministic sourcing preference — LOWER value = MORE preferred origin.
+     * NULL (legacy/seed nodes) sorts LAST so configured nodes always win. The
+     * single-origin selection sorts by (priority NULLS LAST, code, id).
+     */
+    priority: number | null;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+  };
+
+  /**
+   * L9 — per-(variant, location) stock ledger. `available_quantity` and
+   * `reserved_quantity` carry DB CHECKs (>= 0) so negative stock is impossible;
+   * UNIQUE(variant_id, location_id) allows exactly one authoritative level per
+   * node; `version` is the optimistic-lock counter for repositories (mirroring
+   * `product_variant.version`). The atomic conditional UPDATE pattern (guarded
+   * by `available_quantity >= :qty`) is the final concurrency guard for
+   * reservations.
+   */
+  inventory_level: {
+    id: string;
+    variant_id: string;
+    location_id: string;
+    available_quantity: number;
+    reserved_quantity: number;
+    /** Optimistic-lock version; incremented on every level mutation. */
+    version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+  };
+
+  /**
+   * L9 — durable reservation ledger. `reservation_key` is UNIQUE (app-generated
+   * idempotency key), so a retried/concurrent duplicate reservation collides
+   * and rolls back the whole unit of work instead of double-reserving. The
+   * `quantity > 0` CHECK rejects zero/negative reservations at the engine.
+   */
+  inventory_reservation: {
+    id: string;
+    reservation_key: string;
+    location_id: string;
+    variant_id: string;
+    quantity: number;
+    /**
+     * Lifecycle: reserved | confirmed | released | cancelled | expired. The
+     * DB default 'pending' is a legacy fallback for manual inserts only; the
+     * application always writes an explicit status.
+     */
+    status: string;
+    /** Optional link to the order that consumed the reservation. */
+    order_id: string | null;
+    expires_at: string | null;
+    version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+  };
+
   /** domain/entities/Category. Self-referential tree via parent_category_id. */
   category: {
     id: string;
@@ -121,14 +197,6 @@ export interface Database {
     tax_rate: number;
     payment_providers: JsonB<string[]>;
     fulfillment_providers: JsonB<string[]>;
-  };
-
-  /** domain/entities/TaxCategory — rate in basis points. */
-  tax_category: {
-    id: string;
-    name: string;
-    region_id: string;
-    rate: number;
   };
 
   // ---------------------------------------------------------------------------
@@ -315,6 +383,13 @@ export interface Database {
      * return flows are self-contained.
      */
     shipping_snapshot: JsonB<OrderShippingSnapshot> | null;
+    /**
+     * Frozen provider-neutral sourcing snapshot (variant -> location ->
+     * quantity, primary location, shipment origin) recorded at finalization so
+     * dispatch/RMA flows are self-contained and never depend on the mutable
+     * inventory tables or a provider decision.
+     */
+    sourcing_snapshot: JsonB<OrderSourcingSnapshot> | null;
     created_at: Generated<string>;
   };
 
@@ -444,6 +519,12 @@ export interface Database {
      * return-label flows.
      */
     provider_shipment_id: string | null;
+    /**
+     * L9 — the inventory_location node that actually fulfilled this order.
+     * Resolves the shipment origin from the LOCAL location record (never
+     * reconstructed from Shipbubble).
+     */
+    sourcing_location_id: string | null;
     created_at: Generated<string>;
     /** Set by courier tracking events (ProcessCourierTrackingEventUseCase). */
     updated_at: Generated<string>;
@@ -573,5 +654,37 @@ export interface Database {
     /** Action-specific structured payload; serialized JSONB. */
     details: JsonB;
     created_at: Generated<string>;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Notifications (L8)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Durable notification outbox (migration 0014). One row per logical
+   * notification, appended inside the producing use case's business
+   * transaction; `EnqueuePendingNotificationsUseCase` relays pending rows to
+   * `notification-events-queue` and drives the status lifecycle
+   * pending -> queued -> dispatched | failed. `payload` is the full
+   * provider-neutral `NotificationIntent`; `discriminator` disambiguates
+   * per-occurrence intents (e.g. repeated courier tracking updates). A unique
+   * index on (intent_type, aggregate_id, COALESCE(discriminator, '')) makes
+   * duplicate appends collide.
+   */
+  notification_outbox: {
+    /** Application-generated text UUID (IIdGenerator); always supplied. */
+    id: string;
+    intent_type: string;
+    aggregate_id: string;
+    discriminator: string | null;
+    payload: JsonB<NotificationIntent>;
+    status: string;
+    attempts: number;
+    last_error: string | null;
+    job_id: string | null;
+    provider_message_id: string | null;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+    dispatched_at: string | null;
   };
 }

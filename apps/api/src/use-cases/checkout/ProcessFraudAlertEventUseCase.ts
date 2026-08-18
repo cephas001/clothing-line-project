@@ -39,6 +39,16 @@ import {
  *   requirement (SHIPMENT_REQUIRES_RECONCILIATION) is surfaced to the caller.
  * - If no fulfillment record exists at all, nothing was dispatched — nothing to
  *   halt, nothing ambiguous; the fraud alert completes with an audit note.
+ *
+ * INVENTORY (L9):
+ * - A fraud alert is a HOLD, not a cancellation: the order is flagged for
+ *   manual action and fulfillment is halted, but the order is NOT cancelled and
+ *   no payment/refund is created here. Inventory is therefore NEVER touched by
+ *   this use case — the checked-out units were already consumed at finalization
+ *   (confirmed), and if the order is later genuinely cancelled or refunded, the
+ *   cancellation path (not this use case) returns stock to the available pool.
+ *   Auto-restocking on a mere fraud flag would release sellable stock that may
+ *   still be recovered for the order.
  */
 export interface ProcessFraudAlertEventInput {
   transactionReference: string;

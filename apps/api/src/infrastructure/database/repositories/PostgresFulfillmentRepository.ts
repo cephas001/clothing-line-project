@@ -29,6 +29,7 @@ type FulfillmentRow = {
   status: string;
   metadata: unknown;
   provider_shipment_id: string | null;
+  sourcing_location_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -61,6 +62,7 @@ function toDomain(row: FulfillmentRow): FulfillmentRecord {
   if (row.created_at) record.createdAt = row.created_at;
   if (row.updated_at) record.updatedAt = row.updated_at;
   if (row.provider_shipment_id) record.providerShipmentId = row.provider_shipment_id;
+  if (row.sourcing_location_id) record.sourcingLocationId = row.sourcing_location_id;
   if (row.metadata && typeof row.metadata === "object") {
     record.metadata = row.metadata as JsonObject;
   }
@@ -111,6 +113,7 @@ export class PostgresFulfillmentRepository implements IFulfillmentRepository {
       const serviceLevel = strField(fulfillment, "serviceLevel");
       const status = strField(fulfillment, "status") ?? "dispatch_pending";
       const providerShipmentId = strField(fulfillment, "providerShipmentId");
+      const sourcingLocationId = strField(fulfillment, "sourcingLocationId");
       const metadata = objField(fulfillment);
 
       await this.context
@@ -125,6 +128,7 @@ export class PostgresFulfillmentRepository implements IFulfillmentRepository {
           service_level: serviceLevel,
           status,
           provider_shipment_id: providerShipmentId,
+          sourcing_location_id: sourcingLocationId,
           metadata: JSON.stringify(metadata ?? {}),
         })
         .onConflict((oc) =>
@@ -136,6 +140,7 @@ export class PostgresFulfillmentRepository implements IFulfillmentRepository {
             service_level: serviceLevel,
             status,
             provider_shipment_id: providerShipmentId,
+            sourcing_location_id: sourcingLocationId,
             metadata: JSON.stringify(metadata ?? {}),
           }),
         )

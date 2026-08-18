@@ -29,9 +29,10 @@
 //   6. Persist local DB state ONLY through the injected ITransactionManager —
 //      no Shipbubble, Redis, or BullMQ calls happen inside the transaction.
 //   7. Audit logging happens AFTER the transaction commits (PART 20).
-//   8. Customer notification is best-effort and runs AFTER commit; a
-//      notification failure never rolls back the persisted fulfillment state
-//      (PART 18).
+//   8. A `tracking_update` notification intent is appended INSIDE the
+//      transaction (commits atomically with the tracking state change) and
+//      relayed to the notification queue AFTER commit; a notification failure
+//      never rolls back the persisted fulfillment state (L8 PART 8/9).
 //
 // TRANSACTION BOUNDARY (PART 19): the webhook HTTP request (Part 2) already
 // completed; this use case runs in the worker and holds a PostgreSQL
@@ -39,8 +40,10 @@
 // awaited inside it.
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
+import { Order } from "@api/domain/entities/Order";
 import { IFulfillmentRepository } from "@api/domain/interfaces/repositories/IFulfillmentRepository";
-import { INotificationService } from "@api/domain/interfaces/services/INotificationService";
+import { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
+import { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepository";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
@@ -59,6 +62,7 @@ import {
   JsonObject,
 } from "@api/domain/shared/contracts";
 import { LogisticsEventJobPayload } from "@api/domain/shared/jobs";
+import type { NotificationIntent } from "@api/domain/shared/notifications";
 import {
   RepositoryError,
   RepositoryErrorCode,
@@ -92,7 +96,8 @@ export class ProcessCourierTrackingEventUseCase {
     private readonly auditLogService: IAuditLogService,
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
-    private readonly notificationService?: INotificationService,
+    private readonly orderRepository: IOrderRepository,
+    private readonly notificationOutboxRepository: INotificationOutboxRepository,
   ) {}
 
   async execute(
@@ -329,9 +334,76 @@ export class ProcessCourierTrackingEventUseCase {
       updated.courier = courier;
     }
 
+    // --- 5c. Resolve the notification recipient (L8 PART 8/9) -----------------
+    // A tracking-progress change that will be committed triggers a
+    // `tracking_update` intent. The recipient is the FROZEN checkout
+    // `Order.shippingSnapshot.destination.email` — never the webhook body.
+    // Loading the order is best-effort: a missing order skips the
+    // notification, never the state transition.
+    let notificationOrder: Order | null = null;
+    if (trackingChanged && nextTrackingState !== null) {
+      try {
+        notificationOrder = await this.orderRepository.findById(updated.orderId);
+      } catch (err: unknown) {
+        this.logger.warn(
+          "Failed to load order for tracking notification (notification skipped)",
+          { err, fulfillmentId, orderId: updated.orderId },
+        );
+        notificationOrder = null;
+      }
+    }
+    const notificationContext =
+      notificationOrder &&
+      (notificationOrder.shippingSnapshot?.destination?.email ?? "").trim()
+        ? {
+            email: (notificationOrder.shippingSnapshot?.destination?.email ?? "").trim(),
+            name: notificationOrder.shippingSnapshot?.destination?.name ?? null,
+            order: notificationOrder,
+          }
+        : null;
+
     try {
       await this.transactionManager.execute(async () => {
         await this.fulfillmentRepository.save(updated);
+        // L8 PART 8/9: append the tracking_update intent INSIDE the
+        // transaction so it commits atomically with the tracking state
+        // change — including the TERMINAL `delivered` transition (a
+        // same-state `delivered` replay leaves `trackingChanged` false and
+        // cannot re-notify). The per-occurrence discriminator (eventKey)
+        // makes an identical event idempotent on the unique index.
+        if (
+          trackingChanged &&
+          nextTrackingState !== null &&
+          notificationContext
+        ) {
+          const trackingIntent: NotificationIntent = {
+            type: "tracking_update",
+            payload: {
+              recipient: {
+                email: notificationContext.email,
+                name: notificationContext.name,
+              },
+              order: {
+                orderId: notificationContext.order.id,
+                cartId: notificationContext.order.cartId,
+                customerId: notificationContext.order.customerId,
+                currency: notificationContext.order.currency,
+                createdAt: notificationContext.order.createdAt,
+              },
+              fulfillmentId,
+              trackingNumber: updated.trackingNumber,
+              courier:
+                typeof updated.courier === "string" ? updated.courier : null,
+              status: nextTrackingState,
+              occurredAt: occurredAt ?? new Date().toISOString(),
+            },
+          };
+          await this.notificationOutboxRepository.append(
+            this.idGenerator.generate(),
+            trackingIntent,
+            { discriminator: eventKey },
+          );
+        }
       });
     } catch (err: unknown) {
       const repoErr = err as RepositoryError | undefined;
@@ -376,31 +448,12 @@ export class ProcessCourierTrackingEventUseCase {
       trackingChanged: String(trackingChanged),
     });
 
-    // --- 8. Customer notification: best-effort, AFTER commit ------------------
-    // A notification failure must never roll back the persisted fulfillment
-    // state; notify only on a real tracking-progress change.
-    if (
-      this.notificationService &&
-      trackingChanged &&
-      nextTrackingState !== null
-    ) {
-      try {
-        await this.notificationService.sendTrackingUpdate(
-          updated.orderId,
-          nextTrackingState,
-          {
-            trackingNumber: updated.trackingNumber,
-            courier: typeof updated.courier === "string" ? updated.courier : null,
-            occurredAt: occurredAt ?? new Date().toISOString(),
-          },
-        );
-      } catch (notifyErr: unknown) {
-        this.logger.warn(
-          "Notification service failed to send tracking update (fulfillment state already persisted)",
-          { err: notifyErr, fulfillmentId, providerShipmentId },
-        );
-      }
-    }
+    // --- 8. Customer notification (L8 PART 8/9) -------------------------------
+    // The `tracking_update` intent was appended INSIDE the transaction above,
+    // so it commits atomically with the tracking state change and is relayed
+    // to the notification queue after commit by
+    // EnqueuePendingNotificationsUseCase. A notification failure can therefore
+    // never roll back the persisted fulfillment state.
 
     this.logger.info("Processed logistics event", {
       fulfillmentId,

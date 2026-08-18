@@ -6,11 +6,16 @@ import { ICartRepository } from "@api/domain/interfaces/repositories/ICartReposi
 import { Order, OrderLineItem } from "@api/domain/entities/Order";
 import { Cart } from "@api/domain/entities/Cart";
 import { Payment } from "@api/domain/entities/Payment";
-import { PromotionSnapshot, OrderShippingSnapshot } from "@api/domain/shared/contracts";
+import { InventoryLocation } from "@api/domain/entities/InventoryLocation";
+import { ConfirmInventoryReservationUseCase } from "@api/use-cases/inventory/ConfirmInventoryReservationUseCase";
+import { PromotionSnapshot, OrderShippingSnapshot, OrderSourcingSnapshot } from "@api/domain/shared/contracts";
 import {
   buildOrderShippingSnapshot,
   toOrderShippingSnapshot,
 } from "@api/domain/shared/shippingSnapshot";
+import { buildOrderSourcingSnapshot } from "@api/domain/shared/sourcingSnapshot";
+import { IInventoryReservationRepository } from "@api/domain/interfaces/repositories/IInventoryReservationRepository";
+import { IInventoryLocationRepository } from "@api/domain/interfaces/repositories/IInventoryLocationRepository";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
@@ -20,6 +25,8 @@ import {
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
 import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
+import { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
+import { NotificationIntent } from "@api/domain/shared/notifications";
 
 /**
  * Use case: finalize an order after a successful payment event.
@@ -45,6 +52,21 @@ import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionM
  * - Map repository/adapter errors to DomainError with clear domain codes.
  * - Emit a non-blocking audit log entry recording the finalization.
  * - Return the persisted Order domain entity.
+ *
+ * L8 PART 5 + PART 6 — payment confirmation / order-confirmed notification:
+ * The canonical "order confirmed" transition is THIS use case: the order row is
+ * created with paymentStatus "captured" and the durable payment obligation is
+ * marked captured in the same unit of work — the single authoritative source of
+ * the confirmation (no other use case creates a captured order). A
+ * `payment_confirmation` notification intent is appended to the durable outbox
+ * INSIDE that same transaction, so the notification can only ever be relayed
+ * AFTER the captured/finalized state commits, and a crash after commit but
+ * before queue enqueue cannot lose it (the outbox sweep relays later). The
+ * deterministic event key is `order-confirmed:<orderId>` — mapped by
+ * buildNotificationJobId to the stable queue jobId
+ * `notification:payment_confirmation:<orderId>` — so duplicate webhooks and
+ * finalization replays resolve idempotently to the committed order and never
+ * append (or enqueue) a second confirmation.
  */
 export interface FinalizeOrderTransactionInput {
   cartId: string;
@@ -73,6 +95,10 @@ export class FinalizeOrderTransactionUseCase {
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
+    private readonly notificationOutboxRepository: INotificationOutboxRepository,
+    private readonly confirmInventoryReservation: ConfirmInventoryReservationUseCase,
+    private readonly inventoryReservationRepository: IInventoryReservationRepository,
+    private readonly inventoryLocationRepository: IInventoryLocationRepository,
   ) {}
 
   async execute(input: FinalizeOrderTransactionInput): Promise<Order> {
@@ -352,6 +378,43 @@ export class FinalizeOrderTransactionUseCase {
     }
 
     const createWork = async () => {
+      // --- Confirm the checkout reservation + freeze the sourcing snapshot ---
+      // The reservation ledger was anchored on the DETERMINISTIC payment
+      // reference at initialization (equal to transactionReference in the
+      // standard flow; `payment.reference` when a provider-reference webhook
+      // resolved the obligation). Confirming runs INSIDE this unit of work so
+      // the consumed units commit atomically with the order: a failed
+      // finalization rolls the confirmation back (units stay held for the
+      // retry) and a duplicate/replayed finalization is a no-op (the rows are
+      // already terminal). The frozen OrderSourcingSnapshot then records
+      // EXACTLY which locations' units became this order.
+      const sourcingAnchor = payment?.reference ?? transactionReference;
+      await this.confirmInventoryReservation.execute({
+        orderId: sourcingAnchor,
+        actorId,
+      });
+      let sourcingSnapshot: OrderSourcingSnapshot | null = null;
+      const sourcingReservations =
+        await this.inventoryReservationRepository.findByOrder(sourcingAnchor);
+      if (sourcingReservations.length > 0) {
+        const locationIds = [
+          ...new Set(sourcingReservations.map((r) => r.locationId)),
+        ];
+        const locations: InventoryLocation[] = [];
+        for (const locationId of locationIds) {
+          const location =
+            await this.inventoryLocationRepository.findById(locationId);
+          if (location) {
+            locations.push(location);
+          }
+        }
+        sourcingSnapshot = buildOrderSourcingSnapshot(
+          sourcingReservations,
+          locations,
+          nowIso,
+        );
+      }
+
       // Instantiate Order domain entity. `transactionReference` is populated so
       // the order row carries the payment idempotency key; combined with the
       // UNIQUE order.transaction_reference constraint, the loser of a concurrent
@@ -377,6 +440,7 @@ export class FinalizeOrderTransactionUseCase {
         lineItems: chargedLineItems,
         promotionSnapshot,
         shippingSnapshot,
+        sourcingSnapshot,
       });
       if (promotionSnapshot) {
         order.recordPromotionSnapshot(promotionSnapshot);
@@ -408,6 +472,53 @@ export class FinalizeOrderTransactionUseCase {
       if (payment) {
         payment.markCaptured();
         await this.paymentRepository.save(payment);
+      }
+
+      // --- Order-confirmed notification intent (L8 PART 5/6, inside the tx) --
+      // The "notification" is the DURABLE INTENT only — no provider is called
+      // here and nothing is enqueued yet. Appending inside this transaction
+      // commits the intent atomically with the captured/finalized state, which
+      // is the recovery mechanism for a crash after commit but before the sweep
+      // enqueues: the row is already committed and `EnqueuePendingNotifications
+      // UseCase` relays it afterwards (the enqueue therefore always happens
+      // AFTER the transaction commits). A duplicate webhook / finalization
+      // replay returns earlier via resolveExistingOrder and never reaches this
+      // append; a concurrent race that loses rolls the whole unit of work back.
+      // The recipient is the AUTHORITATIVE checkout email frozen on the cart
+      // (assigned at customer binding), never an HTTP/webhook body value. All
+      // financial values come from the durable payment obligation breakdown and
+      // the frozen charged line-item snapshot. If no cart email is present the
+      // intent is skipped (best-effort) — the order still finalizes.
+      const customerEmail = (cart.email ?? "").trim();
+      if (payment && customerEmail) {
+        const orderConfirmedIntent: NotificationIntent = {
+          type: "payment_confirmation",
+          payload: {
+            recipient: { email: customerEmail },
+            order: {
+              orderId: order.id,
+              cartId: cart.id,
+              customerId: orderCustomerId,
+              currency: payment.currency ?? reportedCurrency,
+              createdAt: nowIso,
+            },
+            transactionReference,
+            breakdown: payment.breakdown,
+            // The durable capture/finalization timestamp — the moment the
+            // captured state was durably recorded, never a live "now" at send.
+            paidAt: nowIso,
+            lineItems: chargedLineItems.map((line) => ({
+              id: line.id,
+              variantId: line.variantId ?? null,
+              quantity: line.quantity,
+              unitPriceMinor: line.unitPriceMinor,
+            })),
+          },
+        };
+        await this.notificationOutboxRepository.append(
+          this.idGenerator.generate(),
+          orderConfirmedIntent,
+        );
       }
 
       return order;

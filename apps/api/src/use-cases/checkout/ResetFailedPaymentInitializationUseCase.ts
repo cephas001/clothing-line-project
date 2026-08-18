@@ -41,6 +41,7 @@
 import { DomainError } from "#domain/entities/errors/DomainError";
 import { Payment, PaymentState } from "@api/domain/entities/Payment";
 import { Cart } from "@api/domain/entities/Cart";
+import { ReleaseInventoryReservationUseCase } from "@api/use-cases/inventory/ReleaseInventoryReservationUseCase";
 import { ICartRepository } from "#domain/interfaces/repositories/ICartRepository";
 import { IPaymentRepository } from "#domain/interfaces/repositories/IPaymentRepository";
 import { IAuditLogService } from "#domain/interfaces/services/IAuditLogService";
@@ -73,6 +74,7 @@ export class ResetFailedPaymentInitializationUseCase {
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
     private readonly transactionManager: ITransactionManager,
+    private readonly releaseInventoryReservation: ReleaseInventoryReservationUseCase,
   ) {}
 
   async execute(
@@ -213,6 +215,17 @@ export class ResetFailedPaymentInitializationUseCase {
 
     try {
       await this.transactionManager.execute(async () => {
+        // Release the checkout reservation held against the obligation's
+        // DETERMINISTIC reference back to the available pool (L9 Part 3),
+        // INSIDE this unit of work so the release commits/rolls back with the
+        // reset — a failed reset never strands the hold. Idempotent: held
+        // units release once; already-terminal rows are a no-op. Custom-only
+        // carts with no reservations are untouched.
+        await this.releaseInventoryReservation.execute({
+          orderId: existing.reference,
+          reason: "payment_failed",
+          actorId,
+        });
         await this.paymentRepository.save(existing);
         await this.cartRepository.save(cart);
       });
