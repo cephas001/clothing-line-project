@@ -150,12 +150,16 @@ export class UseCaseReportBuilder {
 /**
  * Render one unwired use case as a compact, scannable line:
  *
- *   SearchProductsUseCase → ISearchService
- *   InitializePaymentSessionUseCase → IPaymentService (set PAYSTACK_SECRET_KEY)
- *   DispatchOrderFulfillmentUseCase → ILogisticsService (L4/L5 invariant: ...)
+ *   SearchProductsUseCase -> ISearchService
+ *   InitializePaymentSessionUseCase -> IPaymentService (set PAYSTACK_SECRET_KEY)
+ *   DispatchOrderFulfillmentUseCase -> ILogisticsService (L4/L5 invariant: ...)
  *
  * Missing-configuration entries append the env var that would wire the
  * adapter; deferred entries append the caller-supplied note when present.
+ *
+ * ASCII-safe by design: the bootstrap diagnostics render in terminals that may
+ * mis-decode non-ASCII punctuation (e.g. Windows PowerShell code pages), so the
+ * separator is the two-character arrow "->" and headings use plain "-".
  */
 function unwiredEntryLine(u: UnwiredUseCase): string {
   let hint = "";
@@ -168,7 +172,7 @@ function unwiredEntryLine(u: UnwiredUseCase): string {
   } else if (u.note) {
     hint = ` (${u.note})`;
   }
-  return `  ${u.useCase} → ${u.missingDependency}${hint}`;
+  return `  ${u.useCase} -> ${u.missingDependency}${hint}`;
 }
 
 /**
@@ -195,11 +199,11 @@ export function useCaseReportLines(report: UseCaseReport): string[] {
     status: UseCaseAvailability;
   }> = [
     {
-      label: "Unavailable — missing infrastructure capability:",
+      label: "Unavailable - missing infrastructure capability:",
       status: "unavailable-missing-infrastructure",
     },
     {
-      label: "Unavailable — missing configuration:",
+      label: "Unavailable - missing configuration:",
       status: "unavailable-missing-configuration",
     },
     {

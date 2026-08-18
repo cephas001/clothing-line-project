@@ -15,7 +15,9 @@
 //     production and render as genuinely multiline reports in development,
 //     while ordinary structured logs remain single-line pretty records.
 //   - useCaseReportLines: the shared startup tree stays deterministic and
-//     compact (counts + "UseCase → dependency" entries, blank-line groups).
+//     compact (counts + "UseCase -> dependency" entries, blank-line groups),
+//     and every generated character is ASCII-safe (code <= 127) so bootstrap
+//     diagnostics render without mojibake in Windows PowerShell terminals.
 
 import { describe, it } from "../../harness/runner";
 import { expect } from "../../harness/expect";
@@ -26,6 +28,8 @@ import {
 } from "@api/infrastructure/services/PinoLogger";
 import { useCaseReportLines } from "@api/infrastructure/composition/useCases/types";
 import type { UseCaseReport } from "@api/infrastructure/composition/useCases/types";
+import { bootstrapApplication } from "@api/infrastructure/composition/bootstrap";
+import { bootstrapWorker } from "../../../../worker/src/bootstrap";
 import { Writable } from "node:stream";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -381,17 +385,109 @@ describe("useCaseReportLines (shared bootstrap summary tree)", () => {
     expect(text).toContain("    Missing configuration: 1");
     expect(text).toContain("    Deferred by design: 1");
     expect(text).toContain(
-      "SearchProductsUseCase → ISearchService",
+      "SearchProductsUseCase -> ISearchService",
     );
     expect(text).toContain(
-      "InitializePaymentSessionUseCase → IPaymentService (set PAYSTACK_SECRET_KEY)",
+      "InitializePaymentSessionUseCase -> IPaymentService (set PAYSTACK_SECRET_KEY)",
     );
     expect(text).toContain(
-      "DispatchOrderFulfillmentUseCase → ILogisticsService (L4/L5 invariant: the worker must never create shipments.)",
+      "DispatchOrderFulfillmentUseCase -> ILogisticsService (L4/L5 invariant: the worker must never create shipments.)",
     );
+    // ASCII-safe headings: plain "-" replaces the em dash.
+    expect(text).toContain("Unavailable - missing infrastructure capability:");
+    expect(text).toContain("Unavailable - missing configuration:");
+    expect(text).toContain("Deferred by design:");
+    // Every generated character is ASCII (code <= 127): no em dash, no arrow,
+    // nothing that Windows PowerShell code pages could render as mojibake.
+    expect(text).not.toMatch(/[^\x00-\x7F]/);
     // Groups are separated by blank lines for scannability.
     expect(lines.includes("")).toBe(true);
     // Deterministic: same input produces identical output.
     expect(useCaseReportLines(report)).toEqual(lines);
+  });
+
+  it("uses only ASCII punctuation for every group label and arrow", () => {
+    const report: UseCaseReport = {
+      wired: ["BrowseCatalogUseCase"],
+      unwired: [
+        {
+          useCase: "GetVariantAvailabilityUseCase",
+          missingDependency: "IPricingService",
+          status: "deferred-by-design",
+          detail: "API-owned flow; wired only in the API runtime.",
+        },
+      ],
+      summary: {
+        wired: 1,
+        unavailableMissingInfrastructure: 0,
+        unavailableMissingConfiguration: 0,
+        deferredByDesign: 1,
+      },
+    };
+    const lines = useCaseReportLines(report);
+    const text = lines.join("\n");
+    // The only separators are ASCII "-" (heading) and "->" (use case -> dep).
+    expect(text).toContain("GetVariantAvailabilityUseCase -> IPricingService");
+    expect(text).not.toContain("→");
+    expect(text).not.toContain("—");
+    expect(text).not.toMatch(/[^\x00-\x7F]/);
+  });
+});
+
+describe("bootstrap diagnostic summaries are ASCII-safe end to end", () => {
+  /** Compose the real runtime and return its describe() summary. */
+  function withSecret<T>(secret: string, fn: () => T): T {
+    const prev = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = secret;
+    try {
+      return fn();
+    } finally {
+      if (prev === undefined) {
+        delete process.env.JWT_SECRET;
+      } else {
+        process.env.JWT_SECRET = prev;
+      }
+    }
+  }
+
+  it("the API bootstrap summary contains no non-ASCII characters", async () => {
+    const runtime = withSecret("ascii-test-secret", () => bootstrapApplication());
+    try {
+      const summary = runtime.describe();
+      // Every generated character is ASCII (code <= 127) — no em dash, no arrow.
+      expect(summary).not.toMatch(/[^\x00-\x7F]/);
+      expect(summary).not.toContain("\u2014");
+      expect(summary).not.toContain("\u2192");
+      // ASCII separators are present.
+      expect(summary).toContain("Unavailable - missing infrastructure capability:");
+      expect(summary).toContain("-> IAuthorizationService");
+      expect(summary).toContain("-> IPaymentService (set PAYSTACK_SECRET_KEY)");
+      // Classification semantics preserved (missing infrastructure + configuration).
+      expect(summary).toContain("Missing infrastructure: 6");
+      expect(summary).toContain("Missing configuration: 7");
+      expect(summary).toContain("Deferred by design: 0");
+    } finally {
+      // Release Redis/queue/pool handles so the process can exit cleanly.
+      await runtime.shutdown();
+    }
+  });
+
+  it("the worker bootstrap summary contains no non-ASCII characters", async () => {
+    const runtime = withSecret("ascii-test-secret", () => bootstrapWorker());
+    try {
+      const summary = runtime.describe();
+      expect(summary).not.toMatch(/[^\x00-\x7F]/);
+      expect(summary).not.toContain("\u2014");
+      expect(summary).not.toContain("\u2192");
+      expect(summary).toContain("Deferred by design:");
+      expect(summary).toContain("- missing infrastructure capability:");
+      // Deferred-by-design semantics preserved: the API-owned cart use case is
+      // reported deferred in the worker, never "fixed" to wired.
+      expect(summary).toContain("AddCartLineItemUseCase -> IPricingService");
+      expect(summary).not.toContain("AddCartLineItemUseCase -> IPricingService (wired)");
+    } finally {
+      // Release Redis/queue/pool handles so the process can exit cleanly.
+      await runtime.shutdown();
+    }
   });
 });

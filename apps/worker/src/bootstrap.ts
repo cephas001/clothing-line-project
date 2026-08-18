@@ -195,8 +195,8 @@ export function bootstrapWorker(
       for (const w of workers.report.unavailable) {
         const label =
           w.status === "unavailable-missing-infrastructure"
-            ? "Unavailable — missing infrastructure capability"
-            : "Unavailable — missing configuration";
+            ? "Unavailable - missing infrastructure capability"
+            : "Unavailable - missing configuration";
         lines.push(`  ${label}: ${w.worker} (${w.missingDependency})`);
       }
       return lines.map((line) => (line === "" ? line : `  ${line}`)).join("\n");
