@@ -112,6 +112,7 @@ import type {
   ProviderShipmentReference,
   ReturnLabelRequest,
   ReturnLabelResult,
+  ShipmentOrigin,
   ShippingLabelRequest,
   ShippingLabelResult,
   ShippingQuote,
@@ -430,6 +431,12 @@ export class ShipbubbleLogisticsService implements ILogisticsService {
   ): Promise<ShippingLabelResult> {
     this.validateShippingLabelRequest(request);
     const selection = request.selection;
+    // The frozen origin is authoritative historical context (which application
+    // inventory location sourced the shipment) — the label create body itself
+    // is token-bound, so the origin is never serialized. Validate its shape
+    // (fail closed on a corrupted snapshot) and log only the non-sensitive
+    // application location id.
+    const origin = validateOriginField(request.origin);
 
     const body = {
       request_token: request.requestToken,
@@ -486,6 +493,7 @@ export class ShipbubbleLogisticsService implements ILogisticsService {
       operation: "shipping.labels.create",
       providerShipmentId,
       trackingResolved: true,
+      originLocationId: origin?.locationId ?? null,
     });
 
     return {
@@ -1249,6 +1257,59 @@ export class ShipbubbleLogisticsService implements ILogisticsService {
 // ---------------------------------------------------------------------------
 // Small validation helpers (kept module-local; no Shipbubble types leak out)
 // ---------------------------------------------------------------------------
+
+/**
+ * Validate the application-supplied frozen shipment origin (the
+ * `ShipmentOrigin` carried by `ShippingLabelRequest.origin`, sourced from
+ * `Order.sourcingSnapshot.origin`) when present. The origin is authoritative
+ * historical context (which application inventory location sourced the
+ * shipment) that this adapter NEVER decides itself — the Shipbubble label
+ * create body is token-bound, so the origin is only validated and logged. A
+ * malformed origin indicates a corrupted frozen snapshot and fails closed as
+ * INVALID_PAYLOAD. Returns the validated origin, or null when the request
+ * carried none (legacy/custom-only orders).
+ */
+function validateOriginField(value: unknown): ShipmentOrigin | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ShipbubbleLogisticsError(
+      RepositoryErrorCode.UNKNOWN,
+      "INVALID_PAYLOAD",
+      "createShippingLabel received a malformed shipment origin.",
+    );
+  }
+  const origin = value as Record<string, unknown>;
+  const locationId = optionalString(origin.locationId);
+  if (!locationId) {
+    throw new ShipbubbleLogisticsError(
+      RepositoryErrorCode.UNKNOWN,
+      "INVALID_PAYLOAD",
+      "createShippingLabel received a shipment origin without a locationId.",
+    );
+  }
+  const name = optionalString(origin.name);
+  const email = optionalString(origin.email);
+  const phone = optionalString(origin.phone);
+  const address = optionalString(origin.address);
+  if (!name || !email || !phone || !address) {
+    throw new ShipbubbleLogisticsError(
+      RepositoryErrorCode.UNKNOWN,
+      "INVALID_PAYLOAD",
+      "createShippingLabel received a shipment origin with an incomplete address.",
+    );
+  }
+  const providerAddressCode = optionalString(origin.providerAddressCode);
+  return {
+    locationId,
+    name,
+    email,
+    phone,
+    address,
+    ...(providerAddressCode ? { providerAddressCode } : {}),
+  };
+}
 
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");

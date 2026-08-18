@@ -17,7 +17,11 @@ import { PostgresCategoryRepository } from "../database/repositories/PostgresCat
 import { PostgresCustomerRepository } from "../database/repositories/PostgresCustomerRepository";
 import { PostgresDraftOrderRepository } from "../database/repositories/PostgresDraftOrderRepository";
 import { PostgresFulfillmentRepository } from "../database/repositories/PostgresFulfillmentRepository";
+import { PostgresInventoryLevelRepository } from "../database/repositories/PostgresInventoryLevelRepository";
+import { PostgresInventoryLocationRepository } from "../database/repositories/PostgresInventoryLocationRepository";
+import { PostgresInventoryReservationRepository } from "../database/repositories/PostgresInventoryReservationRepository";
 import { PostgresMoneyAmountRepository } from "../database/repositories/PostgresMoneyAmountRepository";
+import { PostgresNotificationOutboxRepository } from "../database/repositories/PostgresNotificationOutboxRepository";
 import { PostgresOrderEditRepository } from "../database/repositories/PostgresOrderEditRepository";
 import { PostgresOrderReadRepository } from "../database/repositories/PostgresOrderReadRepository";
 import { PostgresOrderRepository } from "../database/repositories/PostgresOrderRepository";
@@ -33,7 +37,6 @@ import { PostgresReviewRepository } from "../database/repositories/PostgresRevie
 import { PostgresRoleRepository } from "../database/repositories/PostgresRoleRepository";
 import { PostgresSalesChannelRepository } from "../database/repositories/PostgresSalesChannelRepository";
 import { PostgresSwapRepository } from "../database/repositories/PostgresSwapRepository";
-import { PostgresTaxCategoryRepository } from "../database/repositories/PostgresTaxCategoryRepository";
 import { PostgresTransactionRepository } from "../database/repositories/PostgresTransactionRepository";
 import { PostgresVariantReadRepository } from "../database/repositories/PostgresVariantReadRepository";
 import { PostgresVariantRepository } from "../database/repositories/PostgresVariantRepository";
@@ -44,7 +47,11 @@ import type { ICategoryRepository } from "@api/domain/interfaces/repositories/IC
 import type { ICustomerRepository } from "@api/domain/interfaces/repositories/ICustomerRepository";
 import type { IDraftOrderRepository } from "@api/domain/interfaces/repositories/IDraftOrderRepository";
 import type { IFulfillmentRepository } from "@api/domain/interfaces/repositories/IFulfillmentRepository";
+import type { IInventoryLevelRepository } from "@api/domain/interfaces/repositories/IInventoryLevelRepository";
+import type { IInventoryLocationRepository } from "@api/domain/interfaces/repositories/IInventoryLocationRepository";
+import type { IInventoryReservationRepository } from "@api/domain/interfaces/repositories/IInventoryReservationRepository";
 import type { IMoneyAmountRepository } from "@api/domain/interfaces/repositories/IMoneyAmountRepository";
+import type { INotificationOutboxRepository } from "@api/domain/interfaces/repositories/INotificationOutboxRepository";
 import type { IOrderEditRepository } from "@api/domain/interfaces/repositories/IOrderEditRepository";
 import type { IOrderReadRepository } from "@api/domain/interfaces/repositories/IOrderReadRepository";
 import type { IOrderRepository } from "@api/domain/interfaces/repositories/IOrderRepository";
@@ -60,7 +67,6 @@ import type { IReviewRepository } from "@api/domain/interfaces/repositories/IRev
 import type { IRoleRepository } from "@api/domain/interfaces/repositories/IRoleRepository";
 import type { ISalesChannelRepository } from "@api/domain/interfaces/repositories/ISalesChannelRepository";
 import type { ISwapRepository } from "@api/domain/interfaces/repositories/ISwapRepository";
-import type { ITaxCategoryRepository } from "@api/domain/interfaces/repositories/ITaxCategoryRepository";
 import type { ITransactionRepository } from "@api/domain/interfaces/repositories/ITransactionRepository";
 import type { IVariantReadRepository } from "@api/domain/interfaces/repositories/IVariantReadRepository";
 import type { IVariantRepository } from "@api/domain/interfaces/repositories/IVariantRepository";
@@ -73,7 +79,11 @@ export interface Repositories {
   customerRepository: ICustomerRepository;
   draftOrderRepository: IDraftOrderRepository;
   fulfillmentRepository: IFulfillmentRepository;
+  inventoryLevelRepository: IInventoryLevelRepository;
+  inventoryLocationRepository: IInventoryLocationRepository;
+  inventoryReservationRepository: IInventoryReservationRepository;
   moneyAmountRepository: IMoneyAmountRepository;
+  notificationOutboxRepository: INotificationOutboxRepository;
   orderEditRepository: IOrderEditRepository;
   orderReadRepository: IOrderReadRepository;
   orderRepository: IOrderRepository;
@@ -89,7 +99,6 @@ export interface Repositories {
   roleRepository: IRoleRepository;
   salesChannelRepository: ISalesChannelRepository;
   swapRepository: ISwapRepository;
-  taxCategoryRepository: ITaxCategoryRepository;
   transactionRepository: ITransactionRepository;
   variantReadRepository: IVariantReadRepository;
   variantRepository: IVariantRepository;
@@ -104,7 +113,11 @@ export function buildRepositories(context: TransactionContext): Repositories {
     customerRepository: new PostgresCustomerRepository(context),
     draftOrderRepository: new PostgresDraftOrderRepository(context),
     fulfillmentRepository: new PostgresFulfillmentRepository(context),
+    inventoryLevelRepository: new PostgresInventoryLevelRepository(context),
+    inventoryLocationRepository: new PostgresInventoryLocationRepository(context),
+    inventoryReservationRepository: new PostgresInventoryReservationRepository(context),
     moneyAmountRepository: new PostgresMoneyAmountRepository(context),
+    notificationOutboxRepository: new PostgresNotificationOutboxRepository(context),
     orderEditRepository: new PostgresOrderEditRepository(context),
     orderReadRepository: new PostgresOrderReadRepository(context),
     orderRepository: new PostgresOrderRepository(context),
@@ -120,7 +133,6 @@ export function buildRepositories(context: TransactionContext): Repositories {
     roleRepository: new PostgresRoleRepository(context),
     salesChannelRepository: new PostgresSalesChannelRepository(context),
     swapRepository: new PostgresSwapRepository(context),
-    taxCategoryRepository: new PostgresTaxCategoryRepository(context),
     transactionRepository: new PostgresTransactionRepository(context),
     variantReadRepository: new PostgresVariantReadRepository(context),
     variantRepository: new PostgresVariantRepository(context),
