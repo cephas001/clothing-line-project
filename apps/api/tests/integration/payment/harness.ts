@@ -15,24 +15,42 @@
 
 import { Cart } from "@api/domain/entities/Cart";
 import { Region } from "@api/domain/entities/Region";
+import { InventoryLocation } from "@api/domain/entities/InventoryLocation";
+import { InventoryLevel } from "@api/domain/entities/InventoryLevel";
 import type { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
 import { InitializePaymentSessionUseCase } from "@api/use-cases/checkout/InitializePaymentSessionUseCase";
 import { VerifyPaymentEventUseCase } from "@api/use-cases/checkout/VerifyPaymentEventUseCase";
 import { FinalizeOrderTransactionUseCase } from "@api/use-cases/checkout/FinalizeOrderTransactionUseCase";
 import { ResetFailedPaymentInitializationUseCase } from "@api/use-cases/checkout/ResetFailedPaymentInitializationUseCase";
+import { ReserveInventoryUseCase } from "@api/use-cases/inventory/ReserveInventoryUseCase";
+import { ConfirmInventoryReservationUseCase } from "@api/use-cases/inventory/ConfirmInventoryReservationUseCase";
+import { ReleaseInventoryReservationUseCase } from "@api/use-cases/inventory/ReleaseInventoryReservationUseCase";
 import { InMemoryCartRepository } from "../../fakes/InMemoryCartRepository";
 import { InMemoryRegionRepository } from "../../fakes/InMemoryRegionRepository";
 import { InMemoryPaymentRepository } from "../../fakes/InMemoryPaymentRepository";
 import { InMemoryOrderRepository } from "../../fakes/InMemoryOrderRepository";
 import { InMemoryTransactionRepository } from "../../fakes/InMemoryTransactionRepository";
+import { InMemoryNotificationOutboxRepository } from "../../fakes/InMemoryNotificationOutboxRepository";
 import { InMemoryAuditLogService } from "../../fakes/InMemoryAuditLogService";
 import { InMemoryTransactionManager } from "../../fakes/InMemoryTransactionManager";
+import { InMemoryInventoryLocationRepository } from "../../fakes/InMemoryInventoryLocationRepository";
+import { InMemoryInventoryLevelRepository } from "../../fakes/InMemoryInventoryLevelRepository";
+import { InMemoryInventoryReservationRepository } from "../../fakes/InMemoryInventoryReservationRepository";
 import { FakePaymentService } from "../../fakes/FakePaymentService";
 import { SequenceIdGenerator } from "../../fakes/SequenceIdGenerator";
 import { NoopLogger } from "../../fakes/NoopLogger";
 import { buildCheckoutCart } from "../../fixtures/cartFactory";
 import { buildRegion } from "../../fixtures/regionFactory";
 import { buildFixedPromotion } from "../../fixtures/promotionFactory";
+
+/**
+ * The default active sourcing node seeded by the harness, with a COMPLETE
+ * LOCAL sender record (the deterministic single-origin rule prefers it, and
+ * the finalization-time sourcing snapshot freezes its origin from this record —
+ * never from Shipbubble).
+ */
+export const DEFAULT_SOURCING_LOCATION_ID = "loc-default";
+const DEFAULT_SOURCING_LOCATION_CODE = "LOC-DEFAULT";
 
 export interface PaymentHarnessOptions {
   cart?: Cart;
@@ -52,6 +70,12 @@ export interface PaymentHarnessOptions {
   paymentRepository?: InMemoryPaymentRepository;
   orderRepository?: InMemoryOrderRepository;
   transactionRepository?: InMemoryTransactionRepository;
+  /** Override the notification outbox store (e.g. one wrapped by a SnapshotTransactionManager). */
+  notificationOutboxRepository?: InMemoryNotificationOutboxRepository;
+  /** Override the L9 inventory stores (e.g. one wrapped by a SnapshotTransactionManager). */
+  inventoryLocationRepository?: InMemoryInventoryLocationRepository;
+  inventoryLevelRepository?: InMemoryInventoryLevelRepository;
+  inventoryReservationRepository?: InMemoryInventoryReservationRepository;
 }
 
 export interface PaymentHarness {
@@ -62,12 +86,19 @@ export interface PaymentHarness {
   regionRepository: InMemoryRegionRepository;
   orderRepository: InMemoryOrderRepository;
   transactionRepository: InMemoryTransactionRepository;
+  notificationOutboxRepository: InMemoryNotificationOutboxRepository;
+  inventoryLocationRepository: InMemoryInventoryLocationRepository;
+  inventoryLevelRepository: InMemoryInventoryLevelRepository;
+  inventoryReservationRepository: InMemoryInventoryReservationRepository;
   paymentService: FakePaymentService;
   auditLogService: InMemoryAuditLogService;
   initializePaymentSession: InitializePaymentSessionUseCase;
   verifyPaymentEvent: VerifyPaymentEventUseCase;
   finalizeOrderTransaction: FinalizeOrderTransactionUseCase;
   resetFailedPaymentInitialization: ResetFailedPaymentInitializationUseCase;
+  reserveInventory: ReserveInventoryUseCase;
+  confirmInventoryReservation: ConfirmInventoryReservationUseCase;
+  releaseInventoryReservation: ReleaseInventoryReservationUseCase;
 }
 
 /**
@@ -106,12 +137,95 @@ export function createPaymentHarness(
   const transactionRepository =
     options.transactionRepository ?? new InMemoryTransactionRepository();
 
+  const notificationOutboxRepository =
+    options.notificationOutboxRepository ?? new InMemoryNotificationOutboxRepository();
+
+  // --- L9 inventory stores: the default active sourcing node with a COMPLETE
+  // LOCAL sender record + a level for EVERY cart variant. The level quantity
+  // is derived from the cart line (max(100, qty * 10)) so any payment-ready
+  // cart resolves its reservation without touching production stock.
+  const inventoryLocationRepository =
+    options.inventoryLocationRepository ?? new InMemoryInventoryLocationRepository();
+  if (inventoryLocationRepository.all.length === 0) {
+    inventoryLocationRepository.seed(
+      new InventoryLocation({
+        id: DEFAULT_SOURCING_LOCATION_ID,
+        code: DEFAULT_SOURCING_LOCATION_CODE,
+        name: "Origin Studio Lagos",
+        isActive: true,
+        priority: 0,
+        senderAddress: {
+          name: "Origin Studio Lagos",
+          email: "origin@originstudio.test",
+          phone: "+2348000000000",
+          address: "12 Marina Road, Lagos Island, Lagos",
+        },
+        providerAddressCode: null,
+      }),
+    );
+  }
+
+  const inventoryLevelRepository =
+    options.inventoryLevelRepository ?? new InMemoryInventoryLevelRepository();
+  for (const item of cart.items) {
+    const variantId = item.variantId;
+    if (!variantId) {
+      continue;
+    }
+    const key = `${DEFAULT_SOURCING_LOCATION_ID}:${variantId}`;
+    const seeded = inventoryLevelRepository.all.some(
+      (level) => level.locationId === DEFAULT_SOURCING_LOCATION_ID && level.variantId === variantId,
+    );
+    if (!seeded) {
+      inventoryLevelRepository.seed(
+        new InventoryLevel({
+          id: `level-${key}`,
+          variantId,
+          locationId: DEFAULT_SOURCING_LOCATION_ID,
+          availableQuantity: Math.max(100, item.quantity * 10),
+          reservedQuantity: 0,
+        }),
+      );
+    }
+  }
+
+  const inventoryReservationRepository =
+    options.inventoryReservationRepository ?? new InMemoryInventoryReservationRepository();
+
   const paymentService = new FakePaymentService();
   const auditLogService = new InMemoryAuditLogService();
   const idGenerator = new SequenceIdGenerator();
   const logger = new NoopLogger();
   const transactionManager =
     options.transactionManager ?? new InMemoryTransactionManager();
+
+  // L9 inventory orchestration use cases, wired exactly as the composition
+  // root wires them for the checkout flow.
+  const reserveInventory = new ReserveInventoryUseCase(
+    inventoryLocationRepository,
+    inventoryLevelRepository,
+    inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const confirmInventoryReservation = new ConfirmInventoryReservationUseCase(
+    inventoryLevelRepository,
+    inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const releaseInventoryReservation = new ReleaseInventoryReservationUseCase(
+    inventoryLevelRepository,
+    inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
 
   const initializePaymentSession = new InitializePaymentSessionUseCase(
     cartRepository,
@@ -122,6 +236,7 @@ export function createPaymentHarness(
     logger,
     transactionManager,
     regionRepository,
+    reserveInventory,
   );
 
   const verifyPaymentEvent = new VerifyPaymentEventUseCase(
@@ -140,6 +255,10 @@ export function createPaymentHarness(
     idGenerator,
     logger,
     transactionManager,
+    notificationOutboxRepository,
+    confirmInventoryReservation,
+    inventoryReservationRepository,
+    inventoryLocationRepository,
   );
 
   const resetFailedPaymentInitialization =
@@ -150,6 +269,7 @@ export function createPaymentHarness(
       idGenerator,
       logger,
       transactionManager,
+      releaseInventoryReservation,
     );
 
   return {
@@ -160,11 +280,18 @@ export function createPaymentHarness(
     regionRepository,
     orderRepository,
     transactionRepository,
+    notificationOutboxRepository,
+    inventoryLocationRepository,
+    inventoryLevelRepository,
+    inventoryReservationRepository,
     paymentService,
     auditLogService,
     initializePaymentSession,
     verifyPaymentEvent,
     finalizeOrderTransaction,
     resetFailedPaymentInitialization,
+    reserveInventory,
+    confirmInventoryReservation,
+    releaseInventoryReservation,
   };
 }

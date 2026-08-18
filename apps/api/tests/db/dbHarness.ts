@@ -32,7 +32,7 @@ import { PostgresCartRepository } from "@api-infrastructure/database/repositorie
 // The maintenance database every Postgres cluster ships with.
 const DEFAULT_MAINTENANCE_DB = "postgres";
 const TEST_DB_NAME = "commerce_db_test";
-const EXPECTED_MIGRATION_COUNT = 12;
+const EXPECTED_MIGRATION_COUNT = 18;
 
 types.setTypeParser(20, (value) => {
   return value === null ? null : Number(value);

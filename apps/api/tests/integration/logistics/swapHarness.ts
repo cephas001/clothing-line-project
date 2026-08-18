@@ -17,6 +17,8 @@
 
 import { Cart } from "@api/domain/entities/Cart";
 import { Customer } from "@api/domain/entities/Customer";
+import { InventoryLevel } from "@api/domain/entities/InventoryLevel";
+import { InventoryLocation } from "@api/domain/entities/InventoryLocation";
 import { MoneyAmount } from "@api/domain/entities/MoneyAmount";
 import { Order } from "@api/domain/entities/Order";
 import { Payment } from "@api/domain/entities/Payment";
@@ -25,6 +27,8 @@ import type { ITransactionManager } from "@api/domain/interfaces/shared/ITransac
 import { ProcessOrderSwapVarianceUseCase } from "@api/use-cases/logistics/ProcessOrderSwapVarianceUseCase";
 import { VerifySwapPaymentEventUseCase } from "@api/use-cases/logistics/VerifySwapPaymentEventUseCase";
 import { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
+import { ConfirmInventoryReservationUseCase } from "@api/use-cases/inventory/ConfirmInventoryReservationUseCase";
+import { ReserveInventoryUseCase } from "@api/use-cases/inventory/ReserveInventoryUseCase";
 import { InMemoryOrderRepository } from "../../fakes/InMemoryOrderRepository";
 import { InMemoryCartRepository } from "../../fakes/InMemoryCartRepository";
 import { InMemorySwapRepository } from "../../fakes/InMemorySwapRepository";
@@ -34,6 +38,12 @@ import { InMemoryVariantRepository } from "../../fakes/InMemoryVariantRepository
 import { InMemoryCustomerRepository } from "../../fakes/InMemoryCustomerRepository";
 import { InMemoryMoneyAmountRepository } from "../../fakes/InMemoryMoneyAmountRepository";
 import { InMemoryTransactionRepository } from "../../fakes/InMemoryTransactionRepository";
+import { InMemoryNotificationOutboxRepository } from "../../fakes/InMemoryNotificationOutboxRepository";
+import { InMemoryInventoryLevelRepository } from "../../fakes/InMemoryInventoryLevelRepository";
+import { InMemoryInventoryLocationRepository } from "../../fakes/InMemoryInventoryLocationRepository";
+import { InMemoryInventoryReservationRepository } from "../../fakes/InMemoryInventoryReservationRepository";
+import { RegionalPricingService } from "@api/infrastructure/services/RegionalPricingService";
+import type { IPricingService } from "@api/domain/interfaces/services/IPricingService";
 import { InMemoryAuditLogService } from "../../fakes/InMemoryAuditLogService";
 import { InMemoryTransactionManager } from "../../fakes/InMemoryTransactionManager";
 import { FakePaymentService } from "../../fakes/FakePaymentService";
@@ -51,6 +61,9 @@ import {
 /** The canonical replacement variant id the swap flows swap INTO. */
 export const REPLACEMENT_VARIANT_ID = "variant-9";
 
+/** The single active sourcing node the swap suite reserves against. */
+export const SWAP_LOCATION_ID = "loc-lagos";
+
 export interface SwapHarnessOptions {
   order?: Order;
   cart?: Cart;
@@ -62,6 +75,8 @@ export interface SwapHarnessOptions {
   /** Inventory for the replacement variant (variant-9). Default 10. */
   replacementVariantInventory?: number;
   transactionManager?: ITransactionManager;
+  /** Override the unit-price resolution seam (defaults to RegionalPricingService). */
+  pricingService?: IPricingService;
 }
 
 export interface SwapHarness {
@@ -78,9 +93,16 @@ export interface SwapHarness {
   variantRepository: InMemoryVariantRepository;
   customerRepository: InMemoryCustomerRepository;
   moneyAmountRepository: InMemoryMoneyAmountRepository;
+  pricingService: IPricingService;
   transactionRepository: InMemoryTransactionRepository;
+  notificationOutboxRepository: InMemoryNotificationOutboxRepository;
+  inventoryLevelRepository: InMemoryInventoryLevelRepository;
+  inventoryLocationRepository: InMemoryInventoryLocationRepository;
+  inventoryReservationRepository: InMemoryInventoryReservationRepository;
   paymentService: FakePaymentService;
   auditLogService: InMemoryAuditLogService;
+  reserveInventory: ReserveInventoryUseCase;
+  confirmInventoryReservation: ConfirmInventoryReservationUseCase;
   processOrderSwapVariance: ProcessOrderSwapVarianceUseCase;
   verifySwapPaymentEvent: VerifySwapPaymentEventUseCase;
   finalizeSwapTransaction: FinalizeSwapTransactionUseCase;
@@ -146,13 +168,67 @@ export function createSwapHarness(options: SwapHarnessOptions = {}): SwapHarness
   customerRepository.seed(customer);
   const moneyAmountRepository = new InMemoryMoneyAmountRepository();
   const transactionRepository = new InMemoryTransactionRepository();
+  const notificationOutboxRepository = new InMemoryNotificationOutboxRepository();
+
+  // --- L9 inventory ledger -----------------------------------------------
+  // The swap replacement is held against a real (variant, location) level and
+  // an active sourcing node. The returned variant level exists so the suite can
+  // prove the RETURNED variant is never touched (no auto-restock).
+  const inventoryLocationRepository = new InMemoryInventoryLocationRepository();
+  inventoryLocationRepository.seed(
+    new InventoryLocation({
+      id: SWAP_LOCATION_ID,
+      code: "LOS",
+      name: "Lagos Fulfillment",
+      isActive: true,
+      priority: 1,
+    }),
+  );
+  const inventoryLevelRepository = new InMemoryInventoryLevelRepository();
+  inventoryLevelRepository.seed(
+    new InventoryLevel({
+      id: "level-variant-1",
+      variantId: "variant-1",
+      locationId: SWAP_LOCATION_ID,
+      availableQuantity: options.returnedVariantInventory ?? 10,
+    }),
+  );
+  inventoryLevelRepository.seed(
+    new InventoryLevel({
+      id: "level-variant-9",
+      variantId: REPLACEMENT_VARIANT_ID,
+      locationId: SWAP_LOCATION_ID,
+      availableQuantity: options.replacementVariantInventory ?? 10,
+    }),
+  );
+  const inventoryReservationRepository = new InMemoryInventoryReservationRepository();
 
   const paymentService = new FakePaymentService();
+  const pricingService =
+    options.pricingService ?? new RegionalPricingService(moneyAmountRepository);
   const auditLogService = new InMemoryAuditLogService();
   const idGenerator = new SequenceIdGenerator();
   const logger = new NoopLogger();
   const transactionManager =
     options.transactionManager ?? new InMemoryTransactionManager();
+
+  const reserveInventory = new ReserveInventoryUseCase(
+    inventoryLocationRepository,
+    inventoryLevelRepository,
+    inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const confirmInventoryReservation = new ConfirmInventoryReservationUseCase(
+    inventoryLevelRepository,
+    inventoryReservationRepository,
+    transactionManager,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
 
   const processOrderSwapVariance = new ProcessOrderSwapVarianceUseCase(
     orderRepository,
@@ -166,7 +242,9 @@ export function createSwapHarness(options: SwapHarnessOptions = {}): SwapHarness
     logger,
     transactionManager,
     customerRepository,
-    moneyAmountRepository,
+    pricingService,
+    notificationOutboxRepository,
+    reserveInventory,
   );
 
   const verifySwapPaymentEvent = new VerifySwapPaymentEventUseCase(
@@ -182,11 +260,11 @@ export function createSwapHarness(options: SwapHarnessOptions = {}): SwapHarness
     orderRepository,
     paymentRepository,
     transactionRepository,
-    variantRepository,
     auditLogService,
     idGenerator,
     logger,
     transactionManager,
+    confirmInventoryReservation,
   );
 
   return {
@@ -203,9 +281,16 @@ export function createSwapHarness(options: SwapHarnessOptions = {}): SwapHarness
     variantRepository,
     customerRepository,
     moneyAmountRepository,
+    pricingService,
     transactionRepository,
+    notificationOutboxRepository,
+    inventoryLevelRepository,
+    inventoryLocationRepository,
+    inventoryReservationRepository,
     paymentService,
     auditLogService,
+    reserveInventory,
+    confirmInventoryReservation,
     processOrderSwapVariance,
     verifySwapPaymentEvent,
     finalizeSwapTransaction,

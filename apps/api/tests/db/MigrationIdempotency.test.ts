@@ -19,7 +19,7 @@ describe("Real Postgres — migration applicability and idempotency (item 29)", 
   it("fresh database migrated to latest in setup — ledger lists every migration executed", async () => {
     const h = getDbHarness();
     const ledger = await listMigrationLedger(h);
-    expect(ledger.length).toBe(12);
+    expect(ledger.length).toBe(18);
     for (const migration of ledger) {
       expect(migration.executed).toBe(true);
     }
@@ -47,8 +47,23 @@ describe("Real Postgres — migration applicability and idempotency (item 29)", 
       "refund",
       "fulfillment",
       "audit_log",
+      "region",
+      "money_amount",
+      "notification_outbox",
+      "inventory_location",
+      "inventory_level",
+      "inventory_reservation",
     ]) {
       expect(names.includes(expected)).toBe(true);
     }
+  });
+
+  it("the retired tax_category table is absent (canonical tax source is region.tax_rate)", async () => {
+    const h = getDbHarness();
+    const listed = await sql<{ tablename: string }>`
+      SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'
+    `.execute(h.db);
+    const names = listed.rows.map((r) => r.tablename);
+    expect(names.includes("tax_category")).toBe(false);
   });
 });

@@ -23,8 +23,13 @@
 //      than issued unguarded.
 //   7. Finalization (upcharge captured) is ONE atomic unit: swap completed,
 //      order total adjusted ONLY by the variance, replacement line added,
-//      returned variant restocked, replacement variant deducted, ledger
-//      record, payment captured — idempotent on replay.
+//      swap replacement hold CONFIRMED (L9), ledger record, payment
+//      captured — idempotent on replay. The RETURNED variant is NOT
+//      auto-restocked (it becomes sellable only after receipt inspection).
+//   8. The swap replacement variant is RESERVED through the L9 ledger at swap
+//      creation (swap-scoped deterministic key anchored on the swap id) and
+//      replays idempotently; an insufficient replacement shortfall fails
+//      closed BEFORE any payment obligation or refund is created.
 
 import { describe, it } from "../../harness/runner";
 import { expect } from "../../harness/expect";
@@ -32,13 +37,34 @@ import {
   createSwapHarness,
   seedReplacementPrice,
   REPLACEMENT_VARIANT_ID,
+  SWAP_LOCATION_ID,
 } from "./swapHarness";
 import { buildSwapOrder } from "../../fixtures/orderFactory";
+import { InventoryLevel } from "@api/domain/entities/InventoryLevel";
 import { MoneyAmount } from "@api/domain/entities/MoneyAmount";
+import type { IPricingService } from "@api/domain/interfaces/services/IPricingService";
 import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+
+/**
+ * Recording stub for the IPricingService seam. Returns a canned authoritative
+ * price and records every (variantId, regionId) it was consulted with, so a
+ * test can prove the use case resolves unit price through the seam and NEVER
+ * reaches into the money_amount repository directly.
+ */
+class RecordingPricingService implements IPricingService {
+  calls: { variantId: string; regionId: string }[] = [];
+  constructor(private readonly price: number | null) {}
+  async getPriceForRegion(
+    variantId: string,
+    regionId: string,
+  ): Promise<number | null> {
+    this.calls.push({ variantId, regionId });
+    return this.price;
+  }
+}
 
 const SWAP_INPUT = {
   orderId: "order-1",
@@ -56,6 +82,41 @@ function gatewayTimeout(): RepositoryError {
 }
 
 describe("Swap variance — server-authoritative pricing", () => {
+  it("resolves the replacement price through IPricingService — never the money_amount repository directly", async () => {
+    // The repository is seeded with a DIFFERENT price than the injected seam
+    // returns. If the use case bypassed IPricingService and read the repo
+    // directly it would use the seeded value; using the seam's value proves the
+    // single unit-price resolution path is honored (no DB bypass).
+    const recording = new RecordingPricingService(32000);
+    const h = createSwapHarness({ pricingService: recording });
+    h.moneyAmountRepository.seed(
+      new MoneyAmount({
+        id: "price-variant-9-direct",
+        variantId: REPLACEMENT_VARIANT_ID,
+        regionId: "region-ng",
+        amountMinor: 21000,
+      }),
+    );
+
+    const result = await h.processOrderSwapVariance.execute(SWAP_INPUT);
+
+    // The variance reflects the SEAM's authoritative price, not the repo row:
+    // 32000 - 25000 = 7000 upcharge.
+    expect(result.variance).toBe(7000);
+    expect(h.swapRepository.all[0].differenceMinor).toBe(7000);
+    // The obligation amount is the seam-derived variance.
+    const obligation = await h.paymentRepository.findByReference(
+      `CLP-swap-${h.swapRepository.all[0].id}`,
+    );
+    expect(obligation!.amountMinor).toBe(7000);
+
+    // The seam was consulted exactly once, for the replacement variant in the
+    // order's originating region (the cart region of the order).
+    expect(recording.calls).toHaveLength(1);
+    expect(recording.calls[0].variantId).toBe(REPLACEMENT_VARIANT_ID);
+    expect(recording.calls[0].regionId).toBe("region-ng");
+  });
+
   it("an upcharge (new price 30000) creates ONE durable payment obligation and a stable payment URL", async () => {
     const h = createSwapHarness();
     seedReplacementPrice(h, 30000);
@@ -223,6 +284,24 @@ describe("Swap refund — idempotent dispatch and the cumulative guard", () => {
         amountMinor: 0, // refund 25000 (remaining only 5000) -> refused
       }),
     );
+    // Every swap replacement must be RESERVABLE through the L9 ledger — seed
+    // levels for the additional variants the guard test swaps into.
+    h.inventoryLevelRepository.seed(
+      new InventoryLevel({
+        id: "level-variant-8",
+        variantId: "variant-8",
+        locationId: SWAP_LOCATION_ID,
+        availableQuantity: 10,
+      }),
+    );
+    h.inventoryLevelRepository.seed(
+      new InventoryLevel({
+        id: "level-variant-7",
+        variantId: "variant-7",
+        locationId: SWAP_LOCATION_ID,
+        availableQuantity: 10,
+      }),
+    );
 
     const first = await h.processOrderSwapVariance.execute({
       ...SWAP_INPUT,
@@ -292,6 +371,67 @@ describe("Swap refund — idempotent dispatch and the cumulative guard", () => {
   });
 });
 
+describe("Swap replacement inventory — L9 hold at creation", () => {
+  it("reserves the replacement variant on a swap-scoped key anchored on the resolved swap id", async () => {
+    const h = createSwapHarness();
+    seedReplacementPrice(h, 30000);
+
+    const result = await h.processOrderSwapVariance.execute(SWAP_INPUT);
+    expect(result.action).toBe("PAYMENT_REQUIRED");
+
+    // Exactly ONE hold, swap-scoped, anchored on the deterministic swap id.
+    expect(h.inventoryReservationRepository.all).toHaveLength(1);
+    const reservation = h.inventoryReservationRepository.all[0];
+    expect(reservation.variantId).toBe(REPLACEMENT_VARIANT_ID);
+    expect(reservation.quantity).toBe(1);
+    expect(reservation.status).toBe("reserved");
+    expect(reservation.reservationKey).toBe(
+      `reserve:swap:${result.swapId}:${REPLACEMENT_VARIANT_ID}:${SWAP_LOCATION_ID}`,
+    );
+
+    // Level: 10 available -> 9 available / 1 reserved.
+    const level = await h.inventoryLevelRepository.findByVariantAndLocation(
+      REPLACEMENT_VARIANT_ID,
+      SWAP_LOCATION_ID,
+    );
+    expect(level!.availableQuantity).toBe(9);
+    expect(level!.reservedQuantity).toBe(1);
+
+    // Idempotent replay: the SAME hold is replayed — never a second
+    // reservation and never a double deduction.
+    const replay = await h.processOrderSwapVariance.execute(SWAP_INPUT);
+    expect(replay.swapId).toBe(result.swapId);
+    expect(h.inventoryReservationRepository.all).toHaveLength(1);
+    const replayLevel = await h.inventoryLevelRepository.findByVariantAndLocation(
+      REPLACEMENT_VARIANT_ID,
+      SWAP_LOCATION_ID,
+    );
+    expect(replayLevel!.reservedQuantity).toBe(1);
+    expect(replayLevel!.availableQuantity).toBe(9);
+  });
+
+  it("fails closed BEFORE any money moves when the replacement cannot be sourced", async () => {
+    const h = createSwapHarness({ replacementVariantInventory: 0 });
+    seedReplacementPrice(h, 30000);
+
+    await expect(() =>
+      h.processOrderSwapVariance.execute(SWAP_INPUT),
+    ).rejectsWithCode("INSUFFICIENT_SINGLE_LOCATION_STOCK");
+
+    // No obligation claimed, no gateway call, no refund, no hold created.
+    expect(h.paymentRepository.all).toHaveLength(1);
+    expect(h.paymentService.swapInitializations).toHaveLength(0);
+    expect(h.paymentService.refundsIssued).toHaveLength(0);
+    expect(h.inventoryReservationRepository.all).toHaveLength(0);
+
+    // The swap row is durably persisted as `pending` (compensation state) so a
+    // retry once stock is available replays the same swap instead of creating
+    // a duplicate — the hold then succeeds and the flow resumes.
+    expect(h.swapRepository.all).toHaveLength(1);
+    expect(h.swapRepository.all[0].status).toBe("pending");
+  });
+});
+
 describe("Swap finalization — atomic, idempotent", () => {
   it("an upcharge verified and finalized adjusts the order by exactly the variance", async () => {
     const h = createSwapHarness();
@@ -332,9 +472,32 @@ describe("Swap finalization — atomic, idempotent", () => {
     expect(replacementLine!.quantity).toBe(1);
     expect(replacementLine!.unitPriceMinor).toBe(30000);
 
-    // Inventory: returned variant restocked, replacement deducted.
-    expect(h.returnedVariant.inventoryQuantity).toBe(11);
-    expect(h.replacementVariant.inventoryQuantity).toBe(9);
+    // Inventory (L9 ledger): the replacement hold reserved at swap creation was
+    // CONFIRMED at finalization — its units are consumed (available 9, reserved
+    // 0). The RETURNED variant is intentionally NOT auto-restocked: it is
+    // physically coming back and only becomes sellable after receipt inspection.
+    const replacementLevel = await h.inventoryLevelRepository.findByVariantAndLocation(
+      REPLACEMENT_VARIANT_ID,
+      SWAP_LOCATION_ID,
+    );
+    expect(replacementLevel!.availableQuantity).toBe(9);
+    expect(replacementLevel!.reservedQuantity).toBe(0);
+    const returnedLevel =
+      await h.inventoryLevelRepository.findByVariantAndLocation(
+        "variant-1",
+        SWAP_LOCATION_ID,
+      );
+    expect(returnedLevel!.availableQuantity).toBe(10);
+    expect(returnedLevel!.reservedQuantity).toBe(0);
+    expect(h.inventoryReservationRepository.all).toHaveLength(1);
+    expect(h.inventoryReservationRepository.all[0].status).toBe("confirmed");
+    expect(h.inventoryReservationRepository.all[0].reservationKey).toBe(
+      `reserve:swap:${result.swapId}:${REPLACEMENT_VARIANT_ID}:${SWAP_LOCATION_ID}`,
+    );
+
+    // The legacy variant-level counters are untouched by finalization.
+    expect(h.returnedVariant.inventoryQuantity).toBe(10);
+    expect(h.replacementVariant.inventoryQuantity).toBe(10);
 
     // Ledger record + captured swap payment.
     expect(h.transactionRepository.all).toHaveLength(1);

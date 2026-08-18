@@ -8,11 +8,17 @@
 // second job with an already-used jobId surfaces RepositoryErrorCode.DUPLICATE
 // — exactly what QueuePaymentEventUseCase maps into an idempotent success
 // (PAYMENT_EVENT_ALREADY_QUEUED) instead of a duplicate job.
+//
+// `jobStates` models the queue's observable job lifecycle for L8-R PART 14
+// (sweep DUPLICATE resolution): every recorded job defaults to a LIVE
+// `waiting` state, and tests can set a state (e.g. "failed") to model an
+// unprovable/stale job.
 
 import type { DeadLetterJob } from "@api/domain/shared/workflow";
 import type {
   IQueueService,
   QueueJobOptions,
+  QueueJobState,
 } from "@api/domain/interfaces/services/IQueueService";
 import {
   RepositoryError,
@@ -28,6 +34,8 @@ export interface RecordedJob {
 export class FakeQueueService implements IQueueService {
   readonly jobs: RecordedJob[] = [];
   readonly deadLetters: RecordedJob[] = [];
+  /** Observable lifecycle state per jobId (defaults to LIVE "waiting"). */
+  readonly jobStates = new Map<string, QueueJobState>();
 
   /** When set, every enqueue throws this error. */
   failWith?: Error;
@@ -59,6 +67,16 @@ export class FakeQueueService implements IQueueService {
     }
 
     this.jobs.push({ queueName, payload, options });
+    if (options?.jobId) {
+      this.jobStates.set(options.jobId, "waiting");
+    }
+  }
+
+  async getJobState(
+    _queueName: string,
+    jobId: string,
+  ): Promise<QueueJobState | null> {
+    return this.jobStates.get(jobId) ?? null;
   }
 
   async getFailedJobs(

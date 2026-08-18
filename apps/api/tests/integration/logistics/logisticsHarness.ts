@@ -35,6 +35,7 @@ import { SelectShippingOptionUseCase } from "@api/use-cases/checkout/SelectShipp
 import { InMemoryCartRepository } from "../../fakes/InMemoryCartRepository";
 import { InMemoryOrderRepository } from "../../fakes/InMemoryOrderRepository";
 import { InMemoryFulfillmentRepository } from "../../fakes/InMemoryFulfillmentRepository";
+import { InMemoryNotificationOutboxRepository } from "../../fakes/InMemoryNotificationOutboxRepository";
 import { InMemoryPaymentRepository } from "../../fakes/InMemoryPaymentRepository";
 import { InMemoryAuditLogService } from "../../fakes/InMemoryAuditLogService";
 import { InMemoryTransactionManager } from "../../fakes/InMemoryTransactionManager";
@@ -65,6 +66,7 @@ export interface LogisticsHarness {
   orderRepository: InMemoryOrderRepository;
   paymentRepository: InMemoryPaymentRepository;
   fulfillmentRepository: InMemoryFulfillmentRepository;
+  notificationOutboxRepository: InMemoryNotificationOutboxRepository;
   logisticsService: FakeLogisticsService;
   queueService: FakeQueueService;
   cryptoService: FakeCryptographyService;
@@ -93,6 +95,7 @@ export function createLogisticsHarness(
     options.fulfillmentRepository ?? new InMemoryFulfillmentRepository();
   const paymentRepository =
     options.paymentRepository ?? new InMemoryPaymentRepository();
+  const notificationOutboxRepository = new InMemoryNotificationOutboxRepository();
 
   const logisticsService = options.logisticsService ?? new FakeLogisticsService();
   const queueService = options.queueService ?? new FakeQueueService();
@@ -129,6 +132,7 @@ export function createLogisticsHarness(
     idGenerator,
     logger,
     transactionManager,
+    notificationOutboxRepository,
   );
 
   const processCourierTrackingEvent = new ProcessCourierTrackingEventUseCase(
@@ -137,6 +141,8 @@ export function createLogisticsHarness(
     auditLogService,
     idGenerator,
     logger,
+    orderRepository,
+    notificationOutboxRepository,
   );
 
   const queueLogisticsEvent = new QueueLogisticsEventUseCase(
@@ -160,6 +166,7 @@ export function createLogisticsHarness(
     orderRepository,
     paymentRepository,
     fulfillmentRepository,
+    notificationOutboxRepository,
     logisticsService,
     queueService,
     cryptoService,

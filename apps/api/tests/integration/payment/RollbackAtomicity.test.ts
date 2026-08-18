@@ -28,6 +28,9 @@ import { InMemoryCartRepository } from "../../fakes/InMemoryCartRepository";
 import { InMemoryPaymentRepository } from "../../fakes/InMemoryPaymentRepository";
 import { InMemoryOrderRepository } from "../../fakes/InMemoryOrderRepository";
 import { InMemoryTransactionRepository } from "../../fakes/InMemoryTransactionRepository";
+import { InMemoryInventoryLocationRepository } from "../../fakes/InMemoryInventoryLocationRepository";
+import { InMemoryInventoryLevelRepository } from "../../fakes/InMemoryInventoryLevelRepository";
+import { InMemoryInventoryReservationRepository } from "../../fakes/InMemoryInventoryReservationRepository";
 import {
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
@@ -44,11 +47,20 @@ function rollbackHarness() {
   const paymentRepository = new InMemoryPaymentRepository();
   const orderRepository = new InMemoryOrderRepository();
   const transactionRepository = new InMemoryTransactionRepository();
+  // L9 inventory stores are wrapped so the nested reservation/confirmation/
+  // release units roll back WITH the outer unit of work.
+  const inventoryLocationRepository = new InMemoryInventoryLocationRepository();
+  const inventoryLevelRepository = new InMemoryInventoryLevelRepository();
+  const inventoryReservationRepository =
+    new InMemoryInventoryReservationRepository();
   const transactionManager = new SnapshotTransactionManager([
     cartRepository,
     paymentRepository,
     orderRepository,
     transactionRepository,
+    inventoryLocationRepository,
+    inventoryLevelRepository,
+    inventoryReservationRepository,
   ]);
   return createPaymentHarness({
     cart,
@@ -57,6 +69,9 @@ function rollbackHarness() {
     orderRepository,
     transactionRepository,
     transactionManager,
+    inventoryLocationRepository,
+    inventoryLevelRepository,
+    inventoryReservationRepository,
   });
 }
 

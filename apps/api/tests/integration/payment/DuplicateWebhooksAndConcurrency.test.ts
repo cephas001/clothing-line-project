@@ -25,7 +25,7 @@ import {
   createPaymentHarness,
   buildDefaultPaymentCart,
 } from "./harness";
-import { BarrierTransactionManager } from "../../fakes/BarrierTransactionManager";
+import { DepthAwareBarrierTransactionManager } from "../../fakes/DepthAwareBarrierTransactionManager";
 import { Transaction } from "@api/domain/entities/Transaction";
 import { Payment } from "@api/domain/entities/Payment";
 
@@ -73,13 +73,16 @@ const FINALIZE_INPUT = {
 describe("Concurrent finalization — the UNIQUE guard wins; the loser resolves idempotently", () => {
   it("two racing finalizations produce ONE order, ONE transaction, cart converted once, payment captured once", async () => {
     const h = createPaymentHarness({
-      transactionManager: new BarrierTransactionManager(2),
+      transactionManager: new DepthAwareBarrierTransactionManager(2),
     });
     seedInitializedObligation(h);
 
     // Both callers pass the idempotency fast-path BEFORE either commits; the
     // barrier releases them together so the loser deterministically collides
-    // on the UNIQUE order.transaction_reference inside the unit of work.
+    // on the UNIQUE order.transaction_reference inside the unit of work. The
+    // depth-aware barrier models Kysely's nested-transaction semantics: the
+    // seeded obligation carries no reservations, so the nested confirmation
+    // unit is a no-op and both actors resolve the winner's order.
     const [first, second] = await Promise.all([
       h.finalizeOrderTransaction.execute(FINALIZE_INPUT),
       h.finalizeOrderTransaction.execute(FINALIZE_INPUT),
@@ -103,7 +106,7 @@ describe("Concurrent finalization — the UNIQUE guard wins; the loser resolves 
 describe("Concurrent initialization — exactly one durable obligation", () => {
   it("two racing initializations yield ONE obligation and a shared reference (no second charge)", async () => {
     const h = createPaymentHarness({
-      transactionManager: new BarrierTransactionManager(2),
+      transactionManager: new DepthAwareBarrierTransactionManager(2),
     });
 
     const [first, second] = await Promise.allSettled([

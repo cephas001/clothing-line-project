@@ -20,6 +20,8 @@ async function main(): Promise<void> {
     await import("./ConstraintEnforcement.test");
     await import("./CartOptimisticLocking.test");
     await import("./MigrationIdempotency.test");
+    await import("./PricingTaxConstraints.test");
+    await import("./InventoryConstraints.test");
 
     const result = await runAll();
     if (result.failed > 0) {
