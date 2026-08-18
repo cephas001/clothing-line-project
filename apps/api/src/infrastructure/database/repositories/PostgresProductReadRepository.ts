@@ -169,11 +169,7 @@ export class PostgresProductReadRepository implements IProductReadRepository {
             eb.exists(
               eb
                 .selectFrom("product_sales_channel")
-                .whereRef(
-                  "product_sales_channel.product_id",
-                  "=",
-                  "product.id",
-                )
+                .whereRef("product_sales_channel.product_id", "=", "product.id")
                 .where(
                   "product_sales_channel.sales_channel_id",
                   "=",
