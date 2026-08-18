@@ -1171,21 +1171,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [rmaId, refundAmountMinor]
-                properties:
-                  rmaId:
-                    type: string
-                    format: uuid
-                  refundAmountMinor:
-                    type: integer
-                    minimum: 0
-                    description: Prorated refund in minor units.
-                  returnLabelUrl:
-                    type: string
-                    format: uri
-                    nullable: true
-                    description: Return label URL when requireReturnLabel was true.
+                $ref: "#/components/schemas/ReturnAuthorization"
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "404":
@@ -1211,6 +1197,13 @@ paths:
         obligation BEFORE Paystack is contacted, and the returned `paymentUrl` lets the
         customer complete that charge.
 
+        INVENTORY: the replacement variant is RESERVED server-side (L9 reservation ledger,
+        deterministic swap-scoped hold) BEFORE any payment obligation or refund is created.
+        A replacement that cannot be fulfilled is rejected with
+        `INSUFFICIENT_INVENTORY`/`INSUFFICIENT_SINGLE_LOCATION_STOCK` (409) and no money
+        moves; the hold is confirmed when the swap is finalized and is NOT released early,
+        so the reserved units are not exposed to other buyers.
+
         OWNERSHIP: when the caller presents a valid bearer JWT, its `customerId` claim is
         the authoritative actor and must match the order's owner; a foreign order is
         rejected (403). Guest requests (no token) remain allowed.
@@ -1229,22 +1222,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [swapId, variance, action]
-                properties:
-                  swapId:
-                    type: string
-                    format: uuid
-                  variance:
-                    type: integer
-                    description: Signed variance in minor units (positive = customer owes).
-                  action:
-                    type: string
-                    enum: [EVEN_EXCHANGE, PAYMENT_REQUIRED, REFUND_DISPATCHED]
-                  paymentUrl:
-                    type: string
-                    format: uri
-                    nullable: true
+                $ref: "#/components/schemas/Swap"
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "401":
@@ -1280,18 +1258,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [orderEditId, differenceDueMinor, status]
-                properties:
-                  orderEditId:
-                    type: string
-                    format: uuid
-                  differenceDueMinor:
-                    type: integer
-                    description: Signed monetary difference in minor units (positive = customer owes).
-                  status:
-                    type: string
-                    enum: [proposed]
+                $ref: "#/components/schemas/OrderEdit"
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "404":
@@ -1560,31 +1527,6 @@ paths:
         "500":
           $ref: "#/components/responses/StandardErrorResponse"
 
-  /admin/tax-categories:
-    post:
-      tags: [Admin]
-      summary: Configure a tax category for a region.
-      description: |
-        Rate is expressed in basis points (0..10,000; e.g. 750 = 7.5%). Duplicate names within
-        a region yield `INVALID_OPERATION`.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ConfigureTaxCategoryRequest"
-      responses:
-        "204":
-          description: Tax category configured.
-        "400":
-          $ref: "#/components/responses/StandardErrorResponse"
-        "404":
-          $ref: "#/components/responses/StandardErrorResponse"
-        "409":
-          $ref: "#/components/responses/StandardErrorResponse"
-        "500":
-          $ref: "#/components/responses/StandardErrorResponse"
-
   /admin/promotions:
     post:
       tags: [Admin]
@@ -1826,8 +1768,18 @@ paths:
             schema:
               $ref: "#/components/schemas/SourcingRequest"
       responses:
-        "204":
-          description: Stale transactions terminated.
+        "200":
+          description: Optimal sourcing location determined.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [locationId]
+                properties:
+                  locationId:
+                    type: string
+                    format: uuid
+                    description: Id of the single optimal location that can fulfill the request.
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "500":
@@ -2905,24 +2857,6 @@ components:
           items:
             type: string
 
-    TaxCategory:
-      type: object
-      required: [id, regionId, name, rate]
-      properties:
-        id:
-          type: string
-          format: uuid
-        regionId:
-          type: string
-          format: uuid
-        name:
-          type: string
-        rate:
-          type: integer
-          minimum: 0
-          maximum: 10000
-          description: Tax rate in basis points (e.g. 750 = 7.5%).
-
     Promotion:
       type: object
       description: Promotion rule used for discount codes.
@@ -3344,6 +3278,59 @@ components:
           type: string
           nullable: true
 
+    ReturnAuthorization:
+      type: object
+      description: Return authorization created with a prorated refund calculation.
+      required: [rmaId, refundAmountMinor]
+      properties:
+        rmaId:
+          type: string
+          format: uuid
+        refundAmountMinor:
+          type: integer
+          minimum: 0
+          description: Prorated refund in minor units.
+        returnLabelUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Return label URL when requireReturnLabel was true.
+
+    Swap:
+      type: object
+      description: Result of a processed order swap.
+      required: [swapId, variance, action]
+      properties:
+        swapId:
+          type: string
+          format: uuid
+        variance:
+          type: integer
+          description: Signed variance in minor units (positive = customer owes).
+        action:
+          type: string
+          enum: [EVEN_EXCHANGE, PAYMENT_REQUIRED, REFUND_DISPATCHED]
+        paymentUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Payment URL when action is PAYMENT_REQUIRED.
+
+    OrderEdit:
+      type: object
+      description: Proposed order edit with the computed monetary difference.
+      required: [orderEditId, differenceDueMinor, status]
+      properties:
+        orderEditId:
+          type: string
+          format: uuid
+        differenceDueMinor:
+          type: integer
+          description: Signed monetary difference in minor units (positive = customer owes).
+        status:
+          type: string
+          enum: [proposed]
+
     DispatchFulfillmentRequest:
       type: object
       properties:
@@ -3497,21 +3484,6 @@ components:
           minimum: 0
           maximum: 100000000000
           description: Regional price in minor units.
-
-    ConfigureTaxCategoryRequest:
-      type: object
-      required: [name, regionId, taxRateBasisPoints]
-      properties:
-        name:
-          type: string
-        regionId:
-          type: string
-          format: uuid
-        taxRateBasisPoints:
-          type: integer
-          minimum: 0
-          maximum: 10000
-          description: Tax rate in basis points (e.g. 750 = 7.5%).
 
     CreatePromotionRequest:
       type: object

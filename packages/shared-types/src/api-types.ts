@@ -1757,17 +1757,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            /** Format: uuid */
-                            rmaId: string;
-                            /** @description Prorated refund in minor units. */
-                            refundAmountMinor: number;
-                            /**
-                             * Format: uri
-                             * @description Return label URL when requireReturnLabel was true.
-                             */
-                            returnLabelUrl?: string | null;
-                        };
+                        "application/json": components["schemas"]["ReturnAuthorization"];
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
@@ -1804,6 +1794,13 @@ export interface paths {
          *     obligation BEFORE Paystack is contacted, and the returned `paymentUrl` lets the
          *     customer complete that charge.
          *
+         *     INVENTORY: the replacement variant is RESERVED server-side (L9 reservation ledger,
+         *     deterministic swap-scoped hold) BEFORE any payment obligation or refund is created.
+         *     A replacement that cannot be fulfilled is rejected with
+         *     `INSUFFICIENT_INVENTORY`/`INSUFFICIENT_SINGLE_LOCATION_STOCK` (409) and no money
+         *     moves; the hold is confirmed when the swap is finalized and is NOT released early,
+         *     so the reserved units are not exposed to other buyers.
+         *
          *     OWNERSHIP: when the caller presents a valid bearer JWT, its `customerId` claim is
          *     the authoritative actor and must match the order's owner; a foreign order is
          *     rejected (403). Guest requests (no token) remain allowed.
@@ -1829,16 +1826,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            /** Format: uuid */
-                            swapId: string;
-                            /** @description Signed variance in minor units (positive = customer owes). */
-                            variance: number;
-                            /** @enum {string} */
-                            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
-                            /** Format: uri */
-                            paymentUrl?: string | null;
-                        };
+                        "application/json": components["schemas"]["Swap"];
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
@@ -1890,14 +1878,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            /** Format: uuid */
-                            orderEditId: string;
-                            /** @description Signed monetary difference in minor units (positive = customer owes). */
-                            differenceDueMinor: number;
-                            /** @enum {string} */
-                            status: "proposed";
-                        };
+                        "application/json": components["schemas"]["OrderEdit"];
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
@@ -2321,52 +2302,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/admin/tax-categories": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Configure a tax category for a region.
-         * @description Rate is expressed in basis points (0..10,000; e.g. 750 = 7.5%). Duplicate names within
-         *     a region yield `INVALID_OPERATION`.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["ConfigureTaxCategoryRequest"];
-                };
-            };
-            responses: {
-                /** @description Tax category configured. */
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                400: components["responses"]["StandardErrorResponse"];
-                404: components["responses"]["StandardErrorResponse"];
-                409: components["responses"]["StandardErrorResponse"];
-                500: components["responses"]["StandardErrorResponse"];
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/admin/promotions": {
         parameters: {
             query?: never;
@@ -2766,12 +2701,20 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Stale transactions terminated. */
-                204: {
+                /** @description Optimal sourcing location determined. */
+                200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": {
+                            /**
+                             * Format: uuid
+                             * @description Id of the single optimal location that can fulfill the request.
+                             */
+                            locationId: string;
+                        };
+                    };
                 };
                 400: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -3345,15 +3288,6 @@ export interface components {
             paymentProviders?: string[];
             fulfillmentProviders?: string[];
         };
-        TaxCategory: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            regionId: string;
-            name: string;
-            /** @description Tax rate in basis points (e.g. 750 = 7.5%). */
-            rate: number;
-        };
         /** @description Promotion rule used for discount codes. */
         Promotion: {
             /** Format: uuid */
@@ -3576,6 +3510,41 @@ export interface components {
             paymentConfirmed: boolean;
             paymentReference?: string | null;
         };
+        /** @description Return authorization created with a prorated refund calculation. */
+        ReturnAuthorization: {
+            /** Format: uuid */
+            rmaId: string;
+            /** @description Prorated refund in minor units. */
+            refundAmountMinor: number;
+            /**
+             * Format: uri
+             * @description Return label URL when requireReturnLabel was true.
+             */
+            returnLabelUrl?: string | null;
+        };
+        /** @description Result of a processed order swap. */
+        Swap: {
+            /** Format: uuid */
+            swapId: string;
+            /** @description Signed variance in minor units (positive = customer owes). */
+            variance: number;
+            /** @enum {string} */
+            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
+            /**
+             * Format: uri
+             * @description Payment URL when action is PAYMENT_REQUIRED.
+             */
+            paymentUrl?: string | null;
+        };
+        /** @description Proposed order edit with the computed monetary difference. */
+        OrderEdit: {
+            /** Format: uuid */
+            orderEditId: string;
+            /** @description Signed monetary difference in minor units (positive = customer owes). */
+            differenceDueMinor: number;
+            /** @enum {string} */
+            status: "proposed";
+        };
         DispatchFulfillmentRequest: {
             preferredCourier?: string;
             serviceLevel?: string;
@@ -3659,13 +3628,6 @@ export interface components {
             regionId: string;
             /** @description Regional price in minor units. */
             amountMinor: number;
-        };
-        ConfigureTaxCategoryRequest: {
-            name: string;
-            /** Format: uuid */
-            regionId: string;
-            /** @description Tax rate in basis points (e.g. 750 = 7.5%). */
-            taxRateBasisPoints: number;
         };
         CreatePromotionRequest: {
             /** @description Normalized to uppercase server-side. */

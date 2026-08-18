@@ -116,13 +116,15 @@ ProcessDeadLetterQueue
   - queueService.moveToDeadLetterQueue; payloadPreview capped at 512 chars.
   - non-blocking audit(DLQ_ENTRY_CREATED).
 
-ReserveInventoryPessimistic
-  Reserve inventory using row-level pessimistic lock (SELECT FOR UPDATE NOWAIT).
-  - Validate quantity (integer, >=1, <=10000).
-  - Inside transactionManager: variantRepository.lockVariantForUpdateNoWait -> LOCKED/NOWAIT mapped to LOCK_ACQUISITION_FAILED.
-  - Rule: if !allowBackorder and available < qty -> OUT_OF_STOCK.
-  - variant.deductInventory(qty); save.
-  - non-blocking audit(INVENTORY_RESERVED).
+ReserveInventoryPessimistic  [RETIRED — L9 cleanup]
+  - Deleted use case. L9 reserves durably through ReserveInventoryUseCase:
+    deterministic single-origin sourcing + atomic conditional `UPDATE
+    inventory_level ... WHERE available_quantity >= ?` (INV-I2) + a
+    UNIQUE(reservation_key) ledger insert whose collision replays the winner's
+    committed row (INV-I3/INV-I4), all inside one ITransactionManager unit.
+  - `IVariantRepository.lockVariantForUpdateNoWait` (SELECT FOR UPDATE NOWAIT)
+    remains a retained low-level repo primitive only; it is NOT wired into
+    checkout reservation. Do not reintroduce pessimistic locking here.
 
 ReconcileOrphanedLocks
   Terminate stale/long-running transactions to free locks.
@@ -336,9 +338,12 @@ ConfigureRegionalPricing
   - amountMinor in smallest currency; idempotent no-op if same amount.
   - transaction save; non-atomic audit(REGIONAL_PRICE_SET).
 
-ConfigureTaxCategory
-  - rate in basis points; region must exist; unique name+region (INVALID_OPERATION).
-  - transaction save; non-atomic audit(TAX_CATEGORY_CREATE).
+ConfigureTaxCategory  [RETIRED — L7-R decision #1]
+  - Removed from the active API surface. Region.tax_rate (basis points) is the
+    SINGLE canonical tax source; tax resolves through ITaxCalculationService ->
+    IRegionRepository. The entity, repository interface, Postgres adapter and
+    use case are deleted; no OpenAPI path/schema exists; the generated contract
+    (packages/shared-types) carries no trace. Migration history is untouched.
 
 CreateSalesChannel
   - name/description length caps; isDisabled default false; transaction save.

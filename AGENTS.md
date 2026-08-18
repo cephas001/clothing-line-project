@@ -8,7 +8,7 @@ Guidance for AI tools and contributors working on this repository. Read this bef
 
 - `apps/api` — Backend domain logic written in **Clean Architecture / Domain-Driven Design**. Contains domain entities, repository/service interfaces, and all **use cases**. `apps/infrastructure`, `apps/adapters`, and `apps/storefront` are scaffolded but the domain + use-case layer of the API is the most mature, working part.
 - `apps/storefront` — Next.js (App Router) storefront (16, React 19, Tailwind v4).
-- `apps/worker` — Background-worker runtime. Reuses the API's domain/application/infrastructure code (via `@api/*` tsconfig aliases) and composes the BullMQ workers (`PaymentEventWorker`, `BulkCatalogImportWorker`). Workers contain no business logic; they invoke shared use cases.
+- `apps/worker` — Background-worker runtime. Reuses the API's domain/application/infrastructure code (via `@api/*` tsconfig aliases) and composes the BullMQ workers (`PaymentEventWorker`, `LogisticsEventWorker`, `NotificationEventWorker`, `BulkCatalogImportWorker`). Workers contain no business logic; they invoke shared use cases.
 - `packages/shared-types` — Generated TypeScript types from the OpenAPI spec (via `openapi-typescript`). `main`/`types` point directly at `src/index.ts` (no build step).
 - `packages/config` — Empty placeholder.
 
@@ -47,7 +47,7 @@ pnpm --filter @clothing-line-project/api dev
 pnpm --filter @clothing-line-project/shared-types generate
 ```
 
-**Typechecking** is the primary validation gate for the domain layer. There is **no test framework configured** (test scripts are stubs that `exit 1`). Verify logic by reasoning + `typecheck`, not `pnpm test`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` runs a Prism mock from it.
+**Typechecking** is the primary validation gate for the domain layer. A zero-dependency test harness IS configured under `apps/api/tests` (`tests/harness/runner.ts` + `tests/harness/expect.ts`): `test` runs every suite via tsx, `typecheck:tests` typechecks src + tests (it may include `../worker/src/workers/QueueWorker.ts` and `../worker/src/workers/NotificationEventWorker.ts` so the API suite can exercise the real worker crash semantics), and `db:test` runs the real-Postgres suites (requires live Postgres + DATABASE_URL). Do not assume a framework like Jest/Vitest is installed. Verify domain changes with `typecheck`, `typecheck:tests`, and `test`; new suites must be registered in `apps/api/tests/run.ts`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` runs a Prism mock from it.
 
 ## Monorepo layout
 
@@ -85,19 +85,68 @@ src/
     admin/ cart/ catalog/ checkout/ customers/ logistics/
     # one file per use case, e.g. <Verb><Noun>UseCase.ts
   infrastructure/             # Concrete adapters: Postgres/Kysely, Redis, services, observability, composition (HTTP runtime)
-  adapters/                   # EMPTY — put controllers/HTTP adapters here
+  adapters/                   # HTTP transport boundary (routers/, middleware/, errors.ts, projections.ts) + index.ts barrel
   utils/                      # handleUtils.ts, taxUtils.ts
 ```
+
+### Product read cache (L9-T)
+
+A read-through Redis cache lives under `src/infrastructure/caching/` and is
+wired ONLY at the API composition root (`bootstrapApplication` in
+`src/infrastructure/composition/bootstrap.ts`) — never inside use cases or
+HTTP routers. See `apps/api/README.md` for the full write-up. Essentials:
+
+- **Chain**: `PostgresProductReadRepository` → `CachedProductReadRepository`
+  (cache-aside, fail-open) → `BrowseCatalogUseCase`/`GetProductDetailsUseCase`
+  (the only consumers of `IProductReadRepository`). Write side:
+  `Invalidating{Product,Variant,MoneyAmount}Repository` bump the generation
+  counter (`product-read:generation`) after `save()` via the fail-open
+  `ProductReadCacheInvalidator`.
+- **Keys**: `product-read:v1:<generation>:<sha256(method:generation:canonicalContext)>`.
+  Generation is part of the key AND the envelope hash echo. Versioning bumps on
+  any key/payload/projection change. Invalidation is generation/namespace
+  versioning — O(1) INCR, NEVER a `KEYS` scan or mass `DEL`; orphaned entries
+  are TTL-reaped.
+- **Failure behavior**: fail-open everywhere. GET/SET/DEL errors are normalized
+  via `toRedisRepositoryError`, logged as structured events, and the read
+  proceeds against Postgres. An unreadable generation disables the cache
+  entirely (nothing written). Corrupt entries are DELETED and re-fetched.
+  Invalidation failure never fails the triggering write (TTL then bounds
+  staleness). TTL is config-driven: `PRODUCT_CACHE_TTL_SECONDS` (default 60).
+- **Authoritative boundaries (never cache-as-truth)**: checkout/payment
+  amounts, regional pricing, tax, promotions, shipping amounts, and inventory
+  RESERVATION decisions always resolve from Postgres. Do not wrap pricing/tax/
+  cart/reservation reads in the product cache. Do not make inventory
+  availability cache-backed.
+- **Worker**: `apps/worker` calls `buildRepositories` directly — no cache
+  decorator, no `PRODUCT_CACHE_TTL_SECONDS` requirement. If a worker ever needs
+  product reads, wire the decorator in the worker bootstrap, never in a use
+  case.
+- **Observability**: structured `event` fields on the logger meta
+  (`product_cache_hit`, `product_cache_miss`, `product_cache_corrupt`,
+  `product_cache_read_error`, `product_cache_write_error`,
+  `product_cache_del_error`, `product_cache_generation_error`,
+  `product_cache_invalidate`, `product_cache_invalidate_error`). Never log raw
+  keys, payloads, tokens, or credentials. Routine hit/miss telemetry is emitted
+  at **debug** (suppressed under the default `LOG_LEVEL=info`); failures,
+  corruption, and invalidation stay at info/warn and remain visible.
 
 ### Worker runtime (`apps/worker`)
 
 The background worker runtime lives in its own package and **imports** the API's
 shared code via `@api/*` tsconfig path aliases (`apps/worker/tsconfig.json` →
 `../api/src/*`). It must never duplicate a use case, repository, or service.
-It composes the BullMQ workers (`PaymentEventWorker`, `BulkCatalogImportWorker`)
-and its own composition root (`apps/worker/src/bootstrap.ts`). Workers start
-only on explicit `runtime.start()` from `apps/worker/src/index.ts` — never on
-import. Validate with `pnpm --filter @clothing-line-project/worker typecheck`.
+It composes the BullMQ workers (`PaymentEventWorker`, `LogisticsEventWorker`,
+`NotificationEventWorker`, `BulkCatalogImportWorker`) and its own composition
+root (`apps/worker/src/bootstrap.ts`). The `NotificationEventWorker` consumes
+`QUEUE_NAMES.notificationEvents` and dispatches through the shared
+`INotificationService` (the Resend adapter is constructed ONLY via
+`apps/api/src/infrastructure/composition/notificationService.ts`); it resolves
+each job's outbox row by id and persists the dispatch receipt through
+`ITransactionManager` in a short transaction — never a provider call inside a
+transaction. Workers start only on explicit `runtime.start()` from
+`apps/worker/src/index.ts` — never on import. Validate with
+`pnpm --filter @clothing-line-project/worker typecheck`.
 
 ### Guidelines
 
@@ -109,7 +158,7 @@ import. Validate with `pnpm --filter @clothing-line-project/worker typecheck`.
   ```ts
   await this.transactionManager.execute(async () => { await repo.save(...) });
   ```
-  Inject `ITransactionManager` via the constructor (match the file's `readonly` style). Do not re-introduce conditional `if (repo.runInTransaction)` checks. The only repo-level lock primitive retained is `IVariantRepository.lockVariantForUpdateNoWait(variantId)` which operates inside the manager's transaction.
+  Inject `ITransactionManager` via the constructor (match the file's `readonly` style). Do not re-introduce conditional `if (repo.runInTransaction)` checks. The only repo-level lock primitive retained is `IVariantRepository.lockVariantForUpdateNoWait(variantId)` which operates inside the manager's transaction; it is **NOT** used by the L9 reservation path (which relies on atomic conditional `UPDATE inventory_level ... WHERE available_quantity >= ?` mutations via `IInventoryLevelRepository`) and remains available only for legitimate future use cases.
 - **Consistency across files**: Some older files use import base `@api/...`, some use `#domain/...` (package `imports`). Match the existing file's import style and alias: `@api/domain/...`, `@api-domain-entities/...`, `#domain/...`, etc. Refer to `apps/api/tsconfig.json` `paths` and `apps/api/package.json` `imports`.
 
 ### Naming & TypeScript conventions

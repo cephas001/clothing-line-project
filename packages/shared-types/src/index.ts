@@ -48,7 +48,6 @@ export type Quote = components["schemas"]["Quote"];
 // Admin
 export type SalesChannel = components["schemas"]["SalesChannel"];
 export type Region = components["schemas"]["Region"];
-export type TaxCategory = components["schemas"]["TaxCategory"];
 export type Promotion = components["schemas"]["Promotion"];
 export type DeadLetterJob = components["schemas"]["DeadLetterJob"];
 export type DraftOrder = components["schemas"]["DraftOrder"];
@@ -104,8 +103,6 @@ export type AdjustInventoryRequest =
   components["schemas"]["AdjustInventoryRequest"];
 export type ConfigureRegionalPricingRequest =
   components["schemas"]["ConfigureRegionalPricingRequest"];
-export type ConfigureTaxCategoryRequest =
-  components["schemas"]["ConfigureTaxCategoryRequest"];
 export type CreatePromotionRequest =
   components["schemas"]["CreatePromotionRequest"];
 export type CreateSalesChannelRequest =
@@ -157,9 +154,6 @@ export type GetInsuranceQuoteResponse =
 
 export type InitializePaymentSessionResponse =
   paths["/store/carts/{id}/payment-sessions"]["post"]["responses"][200]["content"]["application/json"];
-
-export type CompleteCheckoutResponse =
-  paths["/store/carts/{id}/complete"]["post"]["responses"][200]["content"]["application/json"];
 
 export type PaymentWebhookAck =
   paths["/store/payments/webhook"]["post"]["responses"][200]["content"]["application/json"];
