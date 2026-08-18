@@ -89,7 +89,14 @@ export interface WorkerComposition {
   registry: WorkerRegistry;
   report: {
     started: string[];
-    unavailable: Array<{ worker: string; missingDependency: string }>;
+    unavailable: Array<{
+      worker: string;
+      missingDependency: string;
+      /** Availability classification for the startup diagnostics. */
+      status:
+        | "unavailable-missing-infrastructure"
+        | "unavailable-missing-configuration";
+    }>;
   };
 }
 
@@ -119,6 +126,7 @@ export function buildWorkers(options: WorkerBuildOptions): WorkerComposition {
       worker: "PaymentEventWorker",
       missingDependency:
         "FinalizeOrderTransactionUseCase (blocked on IAuditLogService)",
+      status: "unavailable-missing-infrastructure",
     });
   }
 
@@ -135,6 +143,7 @@ export function buildWorkers(options: WorkerBuildOptions): WorkerComposition {
     unavailable.push({
       worker: "BulkCatalogImportWorker",
       missingDependency: "ProcessBulkCatalogImportUseCase (injected processor)",
+      status: "unavailable-missing-infrastructure",
     });
   }
 
@@ -171,6 +180,7 @@ export function buildWorkers(options: WorkerBuildOptions): WorkerComposition {
     unavailable.push({
       worker: "NotificationEventWorker",
       missingDependency: "INotificationService (NOTIFICATION_API_KEY not set)",
+      status: "unavailable-missing-configuration",
     });
   }
 

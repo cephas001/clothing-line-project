@@ -119,7 +119,22 @@ export class QueueWorker<TPayload> {
   /** Begin consuming from the queue. No-op-safe: BullMQ ignores re-runs. */
   async start(): Promise<void> {
     this.logger.info("Starting queue worker", { queue: this.queueName });
-    await this.worker.run();
+    // BullMQ v6 `run()` returns a promise that resolves only when the worker's
+    // main loop EXITS (i.e. on close). It must NOT be awaited here: that would
+    // block WorkerRegistry.startAll() forever on the first worker and every
+    // later worker would never start consuming. Fire-and-forget the run
+    // promise (its rejection is surfaced via the 'error' event and logged) and
+    // gate on waitUntilReady(), which resolves once both Redis connections
+    // (main + blocking) are ready.
+    void this.worker
+      .run()
+      .catch((err: unknown) => {
+        this.logger.error("Queue worker failed to run", {
+          queue: this.queueName,
+          err,
+        });
+      });
+    await this.worker.waitUntilReady();
     this.logger.info("Queue worker started", { queue: this.queueName });
   }
 
