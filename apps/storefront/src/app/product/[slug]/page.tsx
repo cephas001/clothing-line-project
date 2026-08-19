@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-// import { getAllProducts, getProductBySlug, getRelated } from "@/lib/products";
+import { getAllProducts, getProductBySlug, getRelated } from "@/lib/product";
+import ProductDetail from "@/components/ProductDetail/ProductDetail";
 interface PageProps {
   params: Promise<{ slug: string }>;
 }
@@ -18,7 +19,7 @@ export async function generateMetadata({
 }: PageProps): Promise<Metadata> {
     // Unwrap the promise
     const { slug } = await params;
-    // const product = getProductBySlug(slug);
+    const product = getProductBySlug(slug);
     if(!product) return { title: "Not found - Grey Wears"};
     return {
         title: `${product.name} - Grey Wears`,
