@@ -106,8 +106,10 @@ describe("DEV-OBS — use-case composition diagnostics classification", () => {
     const worker = buildUseCases(emptyDeps(), { runtime: "worker" }).report;
 
     const apiStatus = byName(api, "InitializePaymentSessionUseCase")?.status;
-    const workerStatus = byName(worker, "InitializePaymentSessionUseCase")
-      ?.status;
+    const workerStatus = byName(
+      worker,
+      "InitializePaymentSessionUseCase",
+    )?.status;
     expect(apiStatus).toBe("unavailable-missing-configuration");
     expect(workerStatus).toBe("deferred-by-design");
   });
