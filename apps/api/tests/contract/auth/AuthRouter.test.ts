@@ -54,7 +54,9 @@ async function postJson(
   body: unknown,
   bearer?: string,
 ): Promise<JsonResponse> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
   if (bearer) {
     headers.authorization = `Bearer ${bearer}`;
   }
@@ -76,7 +78,9 @@ const VALID_CLAIMS = {
 
 interface AuthHarness {
   authenticateCustomer: {
-    execute: (input: AuthenticateCustomerInput) => Promise<{ accessToken: string }>;
+    execute: (
+      input: AuthenticateCustomerInput,
+    ) => Promise<{ accessToken: string }>;
     calls: AuthenticateCustomerInput[];
   };
   revokeCustomerSession: {
@@ -120,7 +124,9 @@ function buildContractApp(harness: AuthHarness): Express {
     createAuthRouter({
       authenticateCustomer: harness.authenticateCustomer as never,
       revokeCustomerSession: harness.revokeCustomerSession as never,
-      tokenService: new FakeTokenService(new Map([["valid-token", VALID_CLAIMS]])),
+      tokenService: new FakeTokenService(
+        new Map([["valid-token", VALID_CLAIMS]]),
+      ),
       logger: new NoopLogger(),
     }),
   );
@@ -139,7 +145,9 @@ describe("POST /store/auth — transport boundary", () => {
       expect(response.status).toBe(200);
       expect(response.body).toEqual({ accessToken: "issued-token" });
       expect(harness.authenticateCustomer.calls).toHaveLength(1);
-      expect(harness.authenticateCustomer.calls[0].email).toBe("buyer@example.com");
+      expect(harness.authenticateCustomer.calls[0].email).toBe(
+        "buyer@example.com",
+      );
       expect(harness.authenticateCustomer.calls[0].passwordRaw).toBe("secret");
     } finally {
       await server.close();
@@ -203,7 +211,10 @@ describe("POST /store/auth — transport boundary", () => {
       expect(response.status).toBe(401);
       expect(response.body).toEqual({
         success: false,
-        error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password." },
+        error: {
+          code: "INVALID_CREDENTIALS",
+          message: "Invalid email or password.",
+        },
       });
     } finally {
       await server.close();
@@ -228,7 +239,8 @@ describe("POST /store/auth — transport boundary", () => {
         success: false,
         error: {
           code: "ACCOUNT_LOCKED",
-          message: "Account temporarily locked due to multiple failed login attempts.",
+          message:
+            "Account temporarily locked due to multiple failed login attempts.",
         },
       });
     } finally {
@@ -238,7 +250,10 @@ describe("POST /store/auth — transport boundary", () => {
 
   it("403 ACCOUNT_DISABLED for a disabled account", async () => {
     const harness = buildHarness(async () => {
-      throw new DomainError("ACCOUNT_DISABLED", "This account has been disabled.");
+      throw new DomainError(
+        "ACCOUNT_DISABLED",
+        "This account has been disabled.",
+      );
     });
     const server = await startServer(buildContractApp(harness));
     try {
@@ -249,7 +264,10 @@ describe("POST /store/auth — transport boundary", () => {
       expect(response.status).toBe(403);
       expect(response.body).toEqual({
         success: false,
-        error: { code: "ACCOUNT_DISABLED", message: "This account has been disabled." },
+        error: {
+          code: "ACCOUNT_DISABLED",
+          message: "This account has been disabled.",
+        },
       });
     } finally {
       await server.close();
@@ -270,7 +288,9 @@ describe("POST /store/customers/logout — session revocation boundary", () => {
       );
       expect(response.status).toBe(204);
       expect(harness.revokeCustomerSession.calls).toHaveLength(1);
-      expect(harness.revokeCustomerSession.calls[0].activeToken).toBe("valid-token");
+      expect(harness.revokeCustomerSession.calls[0].activeToken).toBe(
+        "valid-token",
+      );
       expect(harness.revokeCustomerSession.calls[0].actorId).toBe("customer-1");
     } finally {
       await server.close();
@@ -281,11 +301,18 @@ describe("POST /store/customers/logout — session revocation boundary", () => {
     const harness = buildHarness(async () => ({ accessToken: "issued-token" }));
     const server = await startServer(buildContractApp(harness));
     try {
-      const response = await postJson(server.baseUrl, "/store/customers/logout", {});
+      const response = await postJson(
+        server.baseUrl,
+        "/store/customers/logout",
+        {},
+      );
       expect(response.status).toBe(401);
       expect(response.body).toEqual({
         success: false,
-        error: { code: "UNAUTHORIZED_ACCESS", message: "Authentication required." },
+        error: {
+          code: "UNAUTHORIZED_ACCESS",
+          message: "Authentication required.",
+        },
       });
       expect(harness.revokeCustomerSession.calls).toHaveLength(0);
     } finally {
@@ -306,7 +333,10 @@ describe("POST /store/customers/logout — session revocation boundary", () => {
       expect(response.status).toBe(401);
       expect(response.body).toEqual({
         success: false,
-        error: { code: "UNAUTHORIZED_ACCESS", message: "Invalid or expired token." },
+        error: {
+          code: "UNAUTHORIZED_ACCESS",
+          message: "Invalid or expired token.",
+        },
       });
       expect(harness.revokeCustomerSession.calls).toHaveLength(0);
     } finally {
@@ -349,7 +379,9 @@ describe("POST /store/customers/logout — session revocation boundary", () => {
         "valid-token",
       );
       expect(response.status).toBe(204);
-      expect(harness.revokeCustomerSession.calls[0].reason).toBe("MANUAL_REVOCATION");
+      expect(harness.revokeCustomerSession.calls[0].reason).toBe(
+        "MANUAL_REVOCATION",
+      );
     } finally {
       await server.close();
     }
