@@ -164,6 +164,18 @@ export class RemoveCartLineItemUseCase {
         );
       }
 
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        this.logger.warn("Cart was concurrently modified; retry the request", {
+          err,
+          cartId,
+          lineItemId,
+        });
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
+
       this.logger.error("Failed to persist cart after removing line item", {
         err,
         cartId,

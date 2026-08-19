@@ -14,8 +14,7 @@ export interface paths {
         /**
          * Browse the catalogue with filtering and pagination.
          * @description Returns a paginated, region- and channel-aware product list. Supports an optional
-         *     category filter and free-text search. `expand`/`fields` projections are honoured by
-         *     the read adapter when present.
+         *     category filter and free-text search.
          */
         get: {
             parameters: {
@@ -24,10 +23,6 @@ export interface paths {
                     categoryId?: string;
                     limit?: number;
                     offset?: number;
-                    /** @description Comma-separated nested relations to expand (e.g. `variants,options`). */
-                    expand?: components["parameters"]["ExpandQuery"];
-                    /** @description Comma-separated subset of fields to project (e.g. `id,title,thumbnail`). */
-                    fields?: components["parameters"]["FieldsQuery"];
                 };
                 header?: {
                     /** @description Scopes catalogue reads to a specific sales channel. */
@@ -746,8 +741,21 @@ export interface paths {
         put?: never;
         /**
          * Retrieve dynamic shipping quotes for the cart.
-         * @description Quotes are fetched from the logistics provider (e.g. Shipbubble). A shipping address
-         *     must be set first (`INVALID_STATE` otherwise).
+         * @description Quotes are fetched from the logistics provider (e.g. Shipbubble) and the server-validated
+         *     quote list is persisted on the cart. A shipping address must be set first
+         *     (`INVALID_STATE` otherwise).
+         *
+         *     The response exposes ONLY the provider-neutral public projection (`id`, `serviceLevel`,
+         *     `amountMinor`, `currency`, `etaDays`). The provider request token, courier identity, and
+         *     service code never cross the client boundary. The `id` returned here is the value the
+         *     client selects via POST /store/carts/{id}/shipping-options; the authoritative amount,
+         *     currency, and provider selection are resolved server-side from the persisted list, never
+         *     from the client.
+         *
+         *     Quotes are only valid for the exact cart state they were obtained for: if the cart
+         *     changes (items, quantities, prices, weight metadata, destination, email, region context)
+         *     after this call, the persisted quotes become stale and selection is rejected
+         *     (`INVALID_STATE`, 409) until quotes are re-fetched.
          */
         post: {
             parameters: {
@@ -770,6 +778,74 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
+                404: components["responses"]["StandardErrorResponse"];
+                409: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/store/carts/{id}/shipping-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Select a shipping option for the cart.
+         * @description Selects one of the server-persisted quotes returned by POST /store/carts/{id}/shipping-quotes
+         *     and freezes the authoritative shipping amount/currency + provider selection (courier,
+         *     service code, request token) on the cart.
+         *
+         *     The request body contains ONLY the application `quoteId` (`additionalProperties: false`).
+         *     No financial values (`amountMinor`, `currency`) and no provider selection data
+         *     (`courierId`, `serviceCode`, `requestToken`) are accepted — the API resolves all of these
+         *     server-side from the quote list persisted on the cart at retrieval time, so a client can
+         *     never set the shipping price or courier.
+         *
+         *     Selection is rejected (`INVALID_STATE`, 409) when the cart has changed since the quotes
+         *     were fetched (stale quote — re-fetch first), when the requested quote is not in the
+         *     latest rate response (stale or forged quote id), or when the cart is frozen, already
+         *     initialized, paid, or converted (`INVALID_OPERATION`, 409). Guest checkout remains
+         *     supported; an optional bearer JWT enforces ownership (`PERMISSION_DENIED`, 403 for a
+         *     foreign cart).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["PathId"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SelectShippingOptionRequest"];
+                };
+            };
+            responses: {
+                /** @description Shipping option selected and persisted on the cart. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShippingOptionSelectedResponse"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -838,8 +914,25 @@ export interface paths {
         /**
          * Initialize a payment intent for the cart.
          * @description Initialises a cryptographic payment intent with the payment gateway and returns the
-         *     hosted authorization URL. Rejects empty carts, carts already initialized, or carts
-         *     already paid.
+         *     hosted authorization URL. The charge amount and currency are computed AUTHORITATIVELY
+         *     server-side (subtotal − discount + tax + shipping + insurance, all from durable server
+         *     state) and durably persisted as the payment obligation BEFORE the gateway is contacted;
+         *     no client-supplied total, discount, tax, shipping amount, or currency is trusted.
+         *
+         *     IDENTITY: the request body NEVER carries a customer identity. When the caller presents
+         *     a valid bearer JWT (issued by POST /store/auth), its `customerId` claim is the
+         *     authoritative actor for ownership checks. Guest checkout is supported (like every
+         *     /store/carts endpoint): without a token the cart is resolved purely by path id and the
+         *     cart's own server-stored customer/email. A customerId supplied in the body is never
+         *     accepted.
+         *
+         *     REQUEST: only client-selectable checkout information is accepted (see
+         *     PaymentSessionRequest). FINANCIAL VALUES are never accepted from the client.
+         *
+         *     RESPONSE: only the application-level result (authorizationUrl, reference) is returned.
+         *     No raw provider response, database row, secret, or gateway key is exposed.
+         *
+         *     Rejects empty carts, carts already initialized, or carts already paid.
          */
         post: {
             parameters: {
@@ -866,48 +959,8 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
-                404: components["responses"]["StandardErrorResponse"];
-                409: components["responses"]["StandardErrorResponse"];
-                500: components["responses"]["StandardErrorResponse"];
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/store/carts/{id}/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Complete checkout and convert the cart into an immutable order. */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    id: components["parameters"]["PathId"];
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Finalized order. */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["Order"];
-                    };
-                };
-                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -929,39 +982,55 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Payment gateway webhook for order finalization.
-         * @description Asynchronous payment-confirmation webhook. The raw body is verified with an HMAC-SHA512
-         *     signature (`PAYMENT_VERIFICATION_FAILED` on mismatch). Idempotent via the transaction
-         *     reference; the cart is converted to an order and a transaction record persisted.
-         *     Rejects when the paid amount differs from the cart total (`INVALID_PAYMENT_AMOUNT`).
+         * Payment gateway webhook (asynchronous payment confirmation).
+         * @description Inbound payment-gateway webhook. The request body is consumed as RAW BYTES and
+         *     verified against the HMAC-SHA512 signature in the `x-paystack-signature` header
+         *     (computed over those exact bytes with the dedicated Paystack webhook secret — never
+         *     the API secret key) BEFORE any JSON parsing; a mismatch returns `401` and the event
+         *     is discarded.
+         *
+         *     After verification the payload is validated, mapped to an internal payment event, and
+         *     enqueued for background processing. The order is NEVER finalized synchronously from
+         *     this request — the background PaymentEventWorker finalizes it later, idempotently by
+         *     transaction reference. A `200` acknowledges receipt (and stops the gateway retrying);
+         *     a `401` (invalid signature) or `500` (processing outage) causes the gateway to retry.
+         *     Only `charge.success` events carrying our checkout metadata are processed; other
+         *     events are acknowledged and ignored (`handled: false`).
          */
         post: {
             parameters: {
                 query?: never;
                 header: {
-                    /** @description HMAC-SHA512 signature of the raw request body. */
-                    "X-Payment-Signature": string;
+                    /**
+                     * @description HMAC-SHA512 (hex) signature of the raw request body, computed by Paystack with
+                     *     the dedicated webhook secret. Must be verified against the exact raw bytes.
+                     */
+                    "x-paystack-signature": string;
                 };
                 path?: never;
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["WebhookPaymentFinalizeRequest"];
+                    "application/json": components["schemas"]["PaystackWebhookEvent"];
                 };
             };
             responses: {
-                /** @description Finalized order. */
+                /**
+                 * @description Acknowledged. The verified event was enqueued for background processing
+                 *     (`handled: true`) or acknowledged but not applicable (`handled: false`).
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Order"];
+                        "application/json": components["schemas"]["PaymentWebhookAck"];
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
-                409: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                413: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
             };
         };
@@ -1717,6 +1786,24 @@ export interface paths {
          * @description Computes the signed variance between the returned line value and the replacement
          *     variant. Positive variance requires payment (`PAYMENT_REQUIRED` with a payment URL),
          *     negative variance dispatches a refund, zero is an even exchange.
+         *
+         *     The replacement price is NEVER client-supplied. It is resolved server-side from
+         *     the authoritative regional price for the order's originating region, so financial
+         *     inputs (amountMinor/currency) are not accepted from the client. When a payment is
+         *     required, the exact server-calculated amount/currency becomes a DURABLE payment
+         *     obligation BEFORE Paystack is contacted, and the returned `paymentUrl` lets the
+         *     customer complete that charge.
+         *
+         *     INVENTORY: the replacement variant is RESERVED server-side (L9 reservation ledger,
+         *     deterministic swap-scoped hold) BEFORE any payment obligation or refund is created.
+         *     A replacement that cannot be fulfilled is rejected with
+         *     `INSUFFICIENT_INVENTORY`/`INSUFFICIENT_SINGLE_LOCATION_STOCK` (409) and no money
+         *     moves; the hold is confirmed when the swap is finalized and is NOT released early,
+         *     so the reserved units are not exposed to other buyers.
+         *
+         *     OWNERSHIP: when the caller presents a valid bearer JWT, its `customerId` claim is
+         *     the authoritative actor and must match the order's owner; a foreign order is
+         *     rejected (403). Guest requests (no token) remain allowed.
          */
         post: {
             parameters: {
@@ -1743,6 +1830,8 @@ export interface paths {
                     };
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                403: components["responses"]["StandardErrorResponse"];
                 404: components["responses"]["StandardErrorResponse"];
                 409: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
@@ -1956,6 +2045,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/store/webhooks/shipbubble": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Shipbubble logistics webhook (courier tracking / shipment events).
+         * @description Inbound Shipbubble logistics webhook. The request body is consumed as RAW BYTES and
+         *     verified against the HMAC-SHA512 signature in the `x-shipbubble-signature` header
+         *     (computed over those exact bytes with the dedicated Shipbubble webhook secret — never
+         *     the API key) BEFORE any JSON parsing; a mismatch returns `401` and the event is
+         *     discarded.
+         *
+         *     After verification the payload is validated and mapped to a provider-neutral logistics
+         *     event, then enqueued for background processing. This request NEVER updates fulfillment,
+         *     NEVER creates shipments, NEVER calls Shipbubble, and holds NO database transaction. The
+         *     logistics worker reconciles the event against durable fulfillment state later,
+         *     idempotently by deterministic event key. A `200` acknowledges receipt (and stops the
+         *     provider retrying); a `401` (invalid signature) or `500` (processing outage) causes the
+         *     provider to retry; a `400` (malformed payload) is permanent and should not be retried.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description HMAC-SHA512 (hex) signature of the raw request body, computed by Shipbubble with
+                     *     the dedicated webhook secret. Must be verified against the exact raw bytes.
+                     */
+                    "x-shipbubble-signature": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ShipbubbleWebhookEvent"];
+                };
+            };
+            responses: {
+                /** @description Acknowledged. The verified event was enqueued for background processing. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LogisticsWebhookAck"];
+                    };
+                };
+                400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
+                500: components["responses"]["StandardErrorResponse"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/products": {
         parameters: {
             query?: never;
@@ -1967,7 +2120,7 @@ export interface paths {
         put?: never;
         /**
          * Create a product.
-         * @description Normalizes and validates the handle (`^[a-z0-9-_]+$`, length 2–100). A handle conflict
+         * @description Normalizes and validates the handle. A handle conflict
          *     yields `INVALID_OPERATION`.
          */
         post: {
@@ -2014,7 +2167,7 @@ export interface paths {
         put?: never;
         /**
          * Create a product variant.
-         * @description SKU is normalized to uppercase and must match `^[A-Z0-9-_]+$`. Inventory is bounded
+         * @description SKU is normalized to uppercase and must match. Inventory is bounded
          *     (0..1,000,000,000). Duplicate SKUs yield `INVALID_OPERATION`.
          */
         post: {
@@ -2149,52 +2302,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/admin/tax-categories": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Configure a tax category for a region.
-         * @description Rate is expressed in basis points (0..10,000; e.g. 750 = 7.5%). Duplicate names within
-         *     a region yield `INVALID_OPERATION`.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json": components["schemas"]["ConfigureTaxCategoryRequest"];
-                };
-            };
-            responses: {
-                /** @description Tax category configured. */
-                204: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-                400: components["responses"]["StandardErrorResponse"];
-                404: components["responses"]["StandardErrorResponse"];
-                409: components["responses"]["StandardErrorResponse"];
-                500: components["responses"]["StandardErrorResponse"];
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/admin/promotions": {
         parameters: {
             query?: never;
@@ -2206,7 +2313,7 @@ export interface paths {
         put?: never;
         /**
          * Create a promotion rule.
-         * @description Code is normalized to uppercase (`^[A-Z0-9-_]+$`). Percentage discounts are bounded to
+         * @description Code is normalized to uppercase. Percentage discounts are bounded to
          *     10,000 basis points; fixed amounts to 1,000,000,000 minor units. Duplicate codes yield
          *     `INVALID_OPERATION`.
          */
@@ -2346,7 +2453,7 @@ export interface paths {
         get?: never;
         /**
          * Replace the permission set of an admin role.
-         * @description Permissions are lowercased, de-duplicated and must match `^[a-z0-9]+:[a-z0-9-]+$`
+         * @description Permissions are lowercased, de-duplicated and must match
          *     (e.g. `read:products`).
          */
         put: {
@@ -2594,14 +2701,17 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Optimal sourcing location. */
+                /** @description Optimal sourcing location determined. */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
                         "application/json": {
-                            /** Format: uuid */
+                            /**
+                             * Format: uuid
+                             * @description Id of the single optimal location that can fulfill the request.
+                             */
                             locationId: string;
                         };
                     };
@@ -2733,7 +2843,7 @@ export interface components {
                  * @example OUT_OF_STOCK
                  * @enum {string}
                  */
-                code: "VALIDATION_ERROR" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
+                code: "VALIDATION_ERROR" | "CART_NOT_FOUND" | "REGION_NOT_FOUND" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "REGION_NOT_FOUND" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
                 /** @example Requested quantity exceeds available inventory. */
                 message: string;
                 details?: {
@@ -2897,16 +3007,50 @@ export interface components {
             currency?: string;
             etaDays?: number;
         };
+        /**
+         * @description Contains ONLY the application quote id the client selected from the shipping-quotes
+         *     response. No financial values (amountMinor, currency) and no provider selection data
+         *     (courierId, serviceCode, requestToken) are accepted — the API resolves all of these
+         *     server-side from the quote list persisted on the cart at retrieval time.
+         */
+        SelectShippingOptionRequest: {
+            /**
+             * Format: uuid
+             * @description Application quote id from the shipping-quotes response.
+             */
+            quoteId: string;
+        };
+        /**
+         * @description The server-validated shipping selection frozen on the cart. Provider selection data
+         *     (courierId, serviceCode, requestToken) is never exposed.
+         */
+        ShippingOptionSelectedResponse: {
+            /** Format: uuid */
+            quoteId: string;
+            serviceLevel?: string | null;
+            /** @description Server-validated shipping amount in minor units, frozen on the cart. */
+            amountMinor: number;
+            currency?: string | null;
+            etaDays?: number | null;
+        };
         InsuranceQuoteResponse: {
             /** @description Insurance premium in minor units. */
             premiumMinor: number;
         };
+        /**
+         * @description Application-level result of payment initialization. Only the redirect target and the
+         *     deterministic application reference are exposed; the server-authoritative financial
+         *     breakdown is NOT returned to the client (it exists only for gateway/webhook
+         *     verification against the durable obligation).
+         */
         PaymentSessionResponse: {
             /**
              * Format: uri
-             * @description Hosted payment authorization URL returned by the gateway.
+             * @description Hosted payment authorization URL the client redirects the customer to.
              */
             authorizationUrl: string;
+            /** @description Deterministic application payment reference for this checkout (derived from the cart id). Use it to correlate the checkout with provider/webhook records. It is server-generated and never accepted from the client. */
+            reference: string;
         };
         /** @description Immutable order DTO with fulfilment and payment state. */
         Order: {
@@ -2918,6 +3062,18 @@ export interface components {
             customerId: string;
             /** @description Captured order total in minor units (Kobo). */
             totalAmountMinor: number;
+            /** @description ISO-4217 currency code (lowercase) of the captured charge. */
+            currency?: string | null;
+            /** @description Frozen merchandise subtotal at order time in minor units. */
+            subtotalMinor?: number;
+            /** @description Frozen promotion discount at order time in minor units. */
+            discountMinor?: number;
+            /** @description Frozen regional tax at order time in minor units. */
+            taxMinor?: number;
+            /** @description Frozen shipping amount at order time in minor units. */
+            shippingMinor?: number;
+            /** @description Frozen insurance premium at order time in minor units. */
+            insuranceMinor?: number;
             /** @enum {string} */
             fulfillmentStatus: "unfulfilled" | "ready_for_dispatch" | "partially_fulfilled" | "fulfilled" | "returned" | "on_hold";
             /** @enum {string} */
@@ -3075,88 +3231,6 @@ export interface components {
             approvedAt?: string | null;
             approvalNote?: string | null;
         };
-        /** @description Return authorization (RMA) with prorated refund. */
-        ReturnAuthorization: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            orderId: string;
-            items?: {
-                /** Format: uuid */
-                lineItemId: string;
-                quantity: number;
-                reasonCode: string;
-            }[];
-            /** @description Prorated refund in minor units. */
-            refundAmountMinor: number;
-            shippingLabelUrl?: string | null;
-            /** @enum {string} */
-            status: "pending_receipt";
-            /** Format: uuid */
-            requestedByCustomerId?: string | null;
-            createdBy?: string | null;
-            /** Format: date-time */
-            createdAt?: string;
-            metadata?: {
-                [key: string]: unknown;
-            };
-        };
-        /** @description Swap processing result including the signed price variance. */
-        Swap: {
-            /** Format: uuid */
-            swapId: string;
-            /** Format: uuid */
-            orderId?: string;
-            /** Format: uuid */
-            returnLineItemId?: string;
-            returnQuantity?: number;
-            /** Format: uuid */
-            newVariantId?: string;
-            newVariantPriceMinor?: number;
-            originalValueMinor?: number;
-            /** @description Signed variance in minor units (positive = customer owes). */
-            variance: number;
-            /** @enum {string} */
-            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
-            /** Format: uri */
-            paymentUrl?: string | null;
-            /** @enum {string} */
-            status?: "even_exchange" | "awaiting_payment" | "refund_dispatched" | "refund_pending_manual";
-            /** Format: date-time */
-            createdAt?: string;
-            paymentReference?: string | null;
-        };
-        /** @description Proposed or confirmed edit to an unfulfilled order. */
-        OrderEdit: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            orderId: string;
-            /** @example proposed_edit */
-            actionType: string;
-            reason?: string | null;
-            /** @enum {string} */
-            status: "draft" | "proposed" | "confirmed" | "applied";
-            /** @description Signed monetary difference in minor units (positive = customer owes). */
-            differenceDueMinor?: number;
-            proposedChanges?: {
-                /** @enum {string} */
-                type: "add" | "remove" | "update";
-                /** Format: uuid */
-                lineItemId?: string | null;
-                /** Format: uuid */
-                newVariantId?: string | null;
-                quantity: number;
-                unitPriceMinor?: number;
-            }[];
-            /** Format: date-time */
-            confirmedAt?: string | null;
-            /** Format: uuid */
-            confirmedBy?: string | null;
-            paymentReference?: string | null;
-            /** Format: date-time */
-            createdAt?: string;
-        };
         /** @description Failed background job surfaced for inspection and retry. */
         DeadLetterJob: {
             id: string;
@@ -3214,15 +3288,6 @@ export interface components {
             paymentProviders?: string[];
             fulfillmentProviders?: string[];
         };
-        TaxCategory: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            regionId: string;
-            name: string;
-            /** @description Tax rate in basis points (e.g. 750 = 7.5%). */
-            rate: number;
-        };
         /** @description Promotion rule used for discount codes. */
         Promotion: {
             /** Format: uuid */
@@ -3276,6 +3341,13 @@ export interface components {
         SetShippingAddressRequest: {
             shippingAddress: components["schemas"]["ShippingAddress"];
         };
+        /**
+         * @description Contains ONLY client-selectable checkout information. No financial values
+         *     (amountMinor, totalMinor, discountMinor, tax, shipping, insurance, currency) and no
+         *     customer identity (customerId) are accepted — the API derives all of these from
+         *     server state and the authenticated session. `returnUrl` is an optional redirect
+         *     hint only.
+         */
         PaymentSessionRequest: {
             /**
              * Format: uri
@@ -3283,13 +3355,43 @@ export interface components {
              */
             returnUrl?: string;
         };
-        WebhookPaymentFinalizeRequest: {
-            /** Format: uuid */
-            cartId: string;
-            /** @description Gateway transaction reference; used as the idempotency key. */
-            transactionReference: string;
-            /** @description Amount captured by the gateway in minor units; must equal the cart total. */
-            amountPaidMinor: number;
+        /**
+         * @description The raw payment-gateway webhook payload as received by /store/payments/webhook.
+         *     This is the PROVIDER's event shape (not our internal contract): the API verifies
+         *     the signature over the raw bytes, validates this payload, and maps it to an
+         *     internal payment event before enqueueing.
+         */
+        PaystackWebhookEvent: {
+            /**
+             * @description Provider event type; only `charge.success` is processed.
+             * @example charge.success
+             */
+            event: string;
+            /** @description Provider event data. */
+            data: {
+                /** @description Provider transaction reference; echoed from the reference the API supplied at initialization. Used as the idempotency key for background finalization. */
+                reference: string;
+                /** @description Amount captured by the provider in integer minor units (kobo/cents). */
+                amount: number;
+                /** @description ISO-4217 currency code of the captured charge. The API verifies it against the durable payment obligation's currency; a mismatch is rejected. */
+                currency?: string;
+                /** @description Provider transaction status (e.g. success). */
+                status?: string;
+                /** @description Metadata echoed from the initialization call. */
+                metadata?: {
+                    /**
+                     * Format: uuid
+                     * @description Checkout cart id; present only for checkout payments.
+                     */
+                    cartId?: string;
+                };
+            };
+        };
+        PaymentWebhookAck: {
+            /** @constant */
+            status: "ok";
+            /** @description True when the verified event was accepted for background processing; false when it was acknowledged but not applicable (unrelated event type or no checkout metadata). */
+            handled: boolean;
         };
         SubmitReviewRequest: {
             rating: number;
@@ -3308,11 +3410,6 @@ export interface components {
             email: string;
             /** Format: password */
             password: string;
-            /**
-             * Format: uuid
-             * @description Optional B2B business unit to associate on registration.
-             */
-            businessUnitId?: string;
         };
         InitiatePasswordResetRequest: {
             /** Format: email */
@@ -3389,8 +3486,6 @@ export interface components {
             returnQuantity: number;
             /** Format: uuid */
             newVariantId: string;
-            /** @description Replacement variant unit price in minor units. */
-            newVariantPriceMinor: number;
             /**
              * Format: uri
              * @description Base URL for the payment redirect when variance requires payment.
@@ -3415,6 +3510,41 @@ export interface components {
             paymentConfirmed: boolean;
             paymentReference?: string | null;
         };
+        /** @description Return authorization created with a prorated refund calculation. */
+        ReturnAuthorization: {
+            /** Format: uuid */
+            rmaId: string;
+            /** @description Prorated refund in minor units. */
+            refundAmountMinor: number;
+            /**
+             * Format: uri
+             * @description Return label URL when requireReturnLabel was true.
+             */
+            returnLabelUrl?: string | null;
+        };
+        /** @description Result of a processed order swap. */
+        Swap: {
+            /** Format: uuid */
+            swapId: string;
+            /** @description Signed variance in minor units (positive = customer owes). */
+            variance: number;
+            /** @enum {string} */
+            action: "EVEN_EXCHANGE" | "PAYMENT_REQUIRED" | "REFUND_DISPATCHED";
+            /**
+             * Format: uri
+             * @description Payment URL when action is PAYMENT_REQUIRED.
+             */
+            paymentUrl?: string | null;
+        };
+        /** @description Proposed order edit with the computed monetary difference. */
+        OrderEdit: {
+            /** Format: uuid */
+            orderEditId: string;
+            /** @description Signed monetary difference in minor units (positive = customer owes). */
+            differenceDueMinor: number;
+            /** @enum {string} */
+            status: "proposed";
+        };
         DispatchFulfillmentRequest: {
             preferredCourier?: string;
             serviceLevel?: string;
@@ -3430,6 +3560,51 @@ export interface components {
             timestamp: string;
             /** @default true */
             notifyCustomer: boolean;
+        };
+        /** @description Raw Shipbubble webhook envelope as received by /store/webhooks/shipbubble. Field names follow Shipbubble's response conventions (data.order_id / data.id, data.tracking_number, data.status, data.courier). The mapper is a pure provider-boundary transformation: it never looks up records, never decides financial validity, and never mutates fulfillment. */
+        ShipbubbleWebhookEvent: {
+            /** @description Provider event name; normalized best-effort (unknown -> "unknown"). */
+            event?: string;
+            /** @description Provider event id when supplied (the idempotency key). */
+            id?: string;
+            /** @description Provider payload. At least one of order_id / id (the provider shipment identity) is required; the mapper rejects a payload with neither. */
+            data: {
+                /** @description Provider shipment identity (e.g. "SB-..."); NEVER the app orderId. */
+                order_id?: string;
+                /** @description Provider shipment/record id; fallback for providerShipmentId and event identity. */
+                id?: string;
+                /** @description Provider event occurrence id when supplied (the idempotency key). */
+                event_id?: string;
+                tracking_number?: string | null;
+                /**
+                 * @description Raw courier status; unknown values pass through.
+                 * @enum {string}
+                 */
+                status?: "in_transit" | "out_for_delivery" | "delivered" | "failed_attempt";
+                /** @description Courier identity (name or { name, tracking_code }). */
+                courier?: string | {
+                    name?: string;
+                    tracking_code?: string;
+                };
+                /**
+                 * Format: date-time
+                 * @description Event occurrence time; created_at/updated_at are also accepted.
+                 */
+                event_time?: string;
+                /** Format: date-time */
+                created_at?: string;
+                /** Format: date-time */
+                updated_at?: string;
+            };
+        };
+        LogisticsWebhookAck: {
+            /** @constant */
+            status: "ok";
+            /**
+             * @description Always true for a verified, well-formed logistics event — it was accepted for background processing.
+             * @constant
+             */
+            handled: true;
         };
         CreateProductRequest: {
             title: string;
@@ -3453,13 +3628,6 @@ export interface components {
             regionId: string;
             /** @description Regional price in minor units. */
             amountMinor: number;
-        };
-        ConfigureTaxCategoryRequest: {
-            name: string;
-            /** Format: uuid */
-            regionId: string;
-            /** @description Tax rate in basis points (e.g. 750 = 7.5%). */
-            taxRateBasisPoints: number;
         };
         CreatePromotionRequest: {
             /** @description Normalized to uppercase server-side. */

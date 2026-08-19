@@ -76,6 +76,13 @@ export class CreatePromotionRuleUseCase {
         );
       }
     } catch (err: any) {
+      // Preserve domain rule violations (e.g. the duplicate-code check below);
+      // DomainError also carries a `.code`, so it must be checked BEFORE the
+      // RepositoryError branch — otherwise an intentional rule failure would be
+      // masked as an INTERNAL_ERROR.
+      if (err instanceof DomainError) {
+        throw err;
+      }
       // If repository threw a RepositoryError, log and rethrow as internal error
       if ((err as RepositoryError)?.code) {
         this.logger.error(

@@ -10,7 +10,11 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "dependsOn": ["db:migrate"]
+    },
+    "db:migrate": {
+      "cache": false
     }
   }
 }

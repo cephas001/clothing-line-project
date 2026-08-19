@@ -7,7 +7,7 @@ import {
 } from "@api/domain/shared/contracts";
 import { ICustomerRepository } from "@api/domain/interfaces/repositories/ICustomerRepository";
 import { ITokenService } from "@api/domain/interfaces/services/ITokenService";
-import { INotificationService } from "@api/domain/interfaces/services/INotificationService";
+import { INotificationService } from "@api/domain/shared/notifications";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
@@ -27,6 +27,20 @@ import {
  * - Send a password reset notification (best-effort).
  * - Emit a non-blocking audit log entry recording the initiation attempt.
  * - Map repository/adapter errors to DomainError with clear domain codes.
+ *
+ * L8 PART 3 (direct-sync RETAINED — NOT outbox-migrated):
+ * This use case deliberately keeps its notification path synchronous rather than
+ * routing through the notification outbox. The `password_reset` intent carries
+ * the RAW single-use token — the adapter cannot compose the reset link without
+ * it, and the token is not retrievable after hashing. Persisting that intent
+ * into the outbox (or a job payload) would durably store a credential-bearing
+ * secret in the async pipeline — a security risk. Invariants that hold:
+ *   1. The notification runs strictly AFTER the reset metadata persistence
+ *      attempt — never inside a DB transaction.
+ *   2. A notification failure NEVER rolls back committed state (best-effort;
+ *      the failure is logged and audited).
+ *   3. The raw token NEVER touches the outbox, queue payloads, or logs — only
+ *      the customer record carries token metadata (id/hash), never the token.
  */
 export interface InitiatePasswordResetInput {
   email: string;
@@ -219,18 +233,27 @@ export class InitiatePasswordResetUseCase {
       }
     }
 
-    // --- Send password reset notification (best-effort)
+    // --- Send password reset notification (direct-sync, best-effort)
     try {
-      // Provide minimal context to the notification service; the service composes the email with the token
-      await this.notificationService.sendPasswordResetEmail(
-        customer.email,
-        resetToken,
-        {
-          expiresInSeconds: tokenTtlSeconds,
-          ipAddress,
-          userAgent,
+      // L8 PART 3 (direct-sync retained): the RAW token is required here — the
+      // adapter cannot render the reset link without it. For this reason the
+      // notification is NOT routed through the notification outbox: storing the
+      // intent would persist a credential-bearing secret in the async pipeline.
+      // The notification runs AFTER the reset metadata was persisted (never
+      // inside a DB transaction) and can never roll back state. Recipient is
+      // the authoritative customer.email; token + TTL come from the token service.
+      await this.notificationService.sendPasswordReset({
+        recipient: {
+          email: customer.email,
+          name:
+            [customer.firstName, customer.lastName].filter(Boolean).join(" ") ||
+            null,
         },
-      );
+        customerId: customer.id,
+        token: resetToken,
+        expiresInSeconds: tokenTtlSeconds,
+        requestedAt: new Date().toISOString(),
+      });
     } catch (err: unknown) {
       this.logger.warn(
         "Notification service failed to send password reset email",

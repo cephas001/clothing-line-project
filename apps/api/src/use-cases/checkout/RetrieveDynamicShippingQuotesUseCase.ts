@@ -1,4 +1,4 @@
-// apps/api/src/use-cases/catalog/RetrieveDynamicShippingQuotesUseCase.ts
+// apps/api/src/use-cases/checkout/RetrieveDynamicShippingQuotesUseCase.ts
 
 import { ICartRepository } from "@api/domain/interfaces/repositories/ICartRepository";
 import { ILogisticsService } from "@api/domain/interfaces/services/ILogisticsService";
@@ -6,7 +6,11 @@ import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
-import { ShippingQuote } from "@api/domain/shared/contracts";
+import { ITransactionManager } from "@api/domain/interfaces/shared/ITransactionManager";
+import {
+  PublicShippingQuote,
+  ShippingQuote,
+} from "@api/domain/shared/contracts";
 import {
   RepositoryError,
   RepositoryErrorCode,
@@ -20,6 +24,11 @@ import {
  * - Require a valid shipping address on the cart before requesting dynamic rates.
  * - Delegate rate aggregation to the logistics service (e.g., Shipbubble) which uses physical
  *   attributes (weight, dimensions, origin, destination) to compute quotes.
+ * - Persist the server-validated quote list on the cart (recordShippingQuotes) so a later
+ *   selection operation resolves the authoritative amount/currency from THIS list — the client
+ *   can never supply a shipping amount, currency, courier or request token.
+ * - Return only the provider-neutral PublicShippingQuote projection; the provider selection
+ *   fields (courierId/serviceCode/requestToken) never cross the client boundary.
  * - Map repository/service errors to DomainError with clear domain codes.
  * - Emit a non-blocking audit log entry recording the request and returned quote count.
  * - Log structured events and failures for observability.
@@ -38,11 +47,12 @@ export class RetrieveDynamicShippingQuotesUseCase {
     private readonly auditLogService: IAuditLogService,
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
+    private readonly transactionManager: ITransactionManager,
   ) {}
 
   async execute(
     input: RetrieveDynamicShippingQuotesInput,
-  ): Promise<ShippingQuote[]> {
+  ): Promise<PublicShippingQuote[]> {
     const cartId = (input.cartId ?? "").trim();
     const actorId = (input.actorId ?? "").trim() || "system";
 
@@ -87,7 +97,7 @@ export class RetrieveDynamicShippingQuotesUseCase {
     }
 
     // --- Request dynamic rates from logistics service
-    let quotes: ShippingQuote[] = [];
+    let serverQuotes: ShippingQuote[] = [];
     try {
       const rawQuotes = await this.logisticsService.fetchDynamicRates(cart);
 
@@ -99,10 +109,10 @@ export class RetrieveDynamicShippingQuotesUseCase {
             cartId,
           },
         );
-        quotes = [];
+        serverQuotes = [];
       } else {
         // Defensive: enforce a sensible maximum to avoid returning huge payloads
-        quotes = rawQuotes.slice(
+        serverQuotes = rawQuotes.slice(
           0,
           RetrieveDynamicShippingQuotesUseCase.MAX_QUOTES,
         );
@@ -113,7 +123,6 @@ export class RetrieveDynamicShippingQuotesUseCase {
         "Failed to fetch dynamic shipping rates from logistics service",
         { err, cartId },
       );
-      // If the adapter exposes structured error codes, map them here (example shown defensively)
       const repoErr = err as RepositoryError | undefined;
       if (repoErr?.code === RepositoryErrorCode.CONNECTION) {
         throw new DomainError(
@@ -135,6 +144,54 @@ export class RetrieveDynamicShippingQuotesUseCase {
       );
     }
 
+    // --- Persist the server-validated quote list (durable selection source) ----
+    // The quote list (including the provider selection fields courierId,
+    // serviceCode and requestToken) is the server-authoritative basis the
+    // selection operation resolves against. It must survive between rate
+    // retrieval and selection, and is NEVER exposed to the client. A fresh
+    // rate response also returns the cart to the "no shipping selected" state
+    // when the previously selected quote is stale or re-priced.
+    if (
+      serverQuotes.length > 0 ||
+      cart.shippingQuotes.length > 0 ||
+      cart.hasShippingSelection
+    ) {
+      cart.recordShippingQuotes(serverQuotes);
+      try {
+        await this.transactionManager.execute(async () => {
+          await this.cartRepository.save(cart);
+        });
+      } catch (saveErr: unknown) {
+        const repoErr = saveErr as RepositoryError | undefined;
+        this.logger.error("Failed to persist shipping quotes on cart", {
+          err: saveErr,
+          cartId,
+        });
+        if (repoErr?.code === RepositoryErrorCode.CONNECTION) {
+          throw new DomainError(
+            "INTERNAL_ERROR",
+            "Database connection error while persisting shipping quote context.",
+          );
+        }
+        if (repoErr?.code === RepositoryErrorCode.TIMEOUT) {
+          throw new DomainError(
+            "INTERNAL_ERROR",
+            "Database timeout while persisting shipping quote context.",
+          );
+        }
+        if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+          throw new DomainError(
+            "LOCK_ACQUISITION_FAILED",
+            "Cart was concurrently modified; retry the request.",
+          );
+        }
+        throw new DomainError(
+          "INTERNAL_ERROR",
+          "Failed to persist shipping quote context.",
+        );
+      }
+    }
+
     // --- Audit log (non-blocking)
     try {
       await this.auditLogService.logAction(
@@ -143,7 +200,7 @@ export class RetrieveDynamicShippingQuotesUseCase {
         {
           auditId: this.idGenerator.generate(),
           cartId,
-          returnedCount: String(quotes.length),
+          returnedCount: String(serverQuotes.length),
           retrievedAt: new Date().toISOString(),
         },
       );
@@ -156,8 +213,26 @@ export class RetrieveDynamicShippingQuotesUseCase {
 
     this.logger.info("Dynamic shipping quotes retrieved", {
       cartId,
-      returnedCount: quotes.length,
+      returnedCount: serverQuotes.length,
     });
-    return quotes;
+
+    // The provider selection fields (courierId/serviceCode/requestToken) are
+    // application-persistence data already stored on the cart; they are never
+    // exposed to the HTTP client.
+    return serverQuotes.map(toPublicQuote);
   }
+}
+
+/**
+ * Strip the provider-only fields from a quote before it crosses the client
+ * boundary. Only the selectable quote identity and display fields are exposed.
+ */
+function toPublicQuote(quote: ShippingQuote): PublicShippingQuote {
+  return {
+    id: quote.id ?? "",
+    serviceLevel: quote.serviceLevel ?? null,
+    amountMinor: quote.amountMinor ?? 0,
+    currency: quote.currency ?? null,
+    etaDays: quote.etaDays ?? null,
+  };
 }

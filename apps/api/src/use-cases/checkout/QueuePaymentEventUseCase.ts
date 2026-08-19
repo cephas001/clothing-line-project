@@ -5,15 +5,25 @@ import { IQueueService } from "@api/domain/interfaces/services/IQueueService";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
-import { JsonObject } from "@api/domain/shared/json";
+import {
+  parsePaymentEventJobPayload,
+  PaymentEventJobPayload,
+  QUEUE_NAMES,
+} from "@api/domain/shared/jobs";
 import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
 
 export interface QueuePaymentEventInput {
-  parsedPayload: JsonObject;
-  transactionReference: string;
+  /**
+   * The provider-agnostic internal payment event the worker consumes. This is
+   * ALWAYS the typed `PaymentEventJobPayload` produced by the provider webhook
+   * mapper (PaystackWebhookPayloadMapper at the application/infrastructure
+   * boundary) — the raw provider envelope never crosses into the queue, and the
+   * worker never parses it.
+   */
+  paymentEvent: PaymentEventJobPayload;
   actorId?: string;
 }
 
@@ -21,17 +31,22 @@ export interface QueuePaymentEventInput {
  * Use case: enqueue a payment event for asynchronous processing.
  *
  * Responsibilities:
- * - Validate inputs and enforce idempotency by using the transactionReference as the jobId.
- * - Provide sensible job options (retries, backoff, timeouts, removeOnComplete).
+ * - Accept the TYPED internal `PaymentEventJobPayload` (never a raw provider
+ *   envelope) and validate it against the queue contract via
+ *   `parsePaymentEventJobPayload`; malformed payloads are a permanent
+ *   VALIDATION_ERROR and are never enqueued.
+ * - Enforce enqueue idempotency by using the transactionReference as the jobId.
+ * - Provide sensible job options (retries, backoff, removeOnComplete).
+ *   Execution-time policies such as timeouts are worker concerns and are not
+ *   expressed as producer options here.
  * - Map adapter/repository errors to DomainError with clear domain codes.
  * - Emit a non-blocking audit log entry recording the enqueue attempt and outcome.
  * - Log structured events and failures for observability.
  */
 export class QueuePaymentEventUseCase {
-  private static readonly DEFAULT_QUEUE_NAME = "payment-events-queue";
+  private static readonly DEFAULT_QUEUE_NAME = QUEUE_NAMES.paymentEvents;
   private static readonly DEFAULT_ATTEMPTS = 5;
   private static readonly DEFAULT_BACKOFF_MS = 2000; // exponential backoff base
-  private static readonly DEFAULT_JOB_TIMEOUT_MS = 30_000; // 30s
 
   constructor(
     private readonly queueService: IQueueService,
@@ -41,23 +56,14 @@ export class QueuePaymentEventUseCase {
   ) {}
 
   async execute(input: QueuePaymentEventInput): Promise<void> {
-    const parsedPayload = input.parsedPayload ?? null;
-    const transactionReference = (input.transactionReference ?? "").trim();
     const actorId = (input.actorId ?? "").trim() || "system";
 
-    // --- Validate inputs
-    if (!parsedPayload || typeof parsedPayload !== "object") {
-      throw new DomainError(
-        "VALIDATION_ERROR",
-        "parsedPayload must be a non-empty object.",
-      );
-    }
-    if (!transactionReference) {
-      throw new DomainError(
-        "VALIDATION_ERROR",
-        "transactionReference is required and must be a non-empty string.",
-      );
-    }
+    // --- Validate against the internal contract (single source of truth) ------
+    // parsePaymentEventJobPayload throws VALIDATION_ERROR for a malformed
+    // payload; this is the producer-side guarantee that the worker only ever
+    // sees a well-formed internal event.
+    const paymentEvent = parsePaymentEventJobPayload(input.paymentEvent);
+    const transactionReference = paymentEvent.transactionReference;
 
     // --- Prepare job options (idempotent jobId = transactionReference)
     const jobId = transactionReference;
@@ -70,15 +76,14 @@ export class QueuePaymentEventUseCase {
       },
       removeOnComplete: true,
       removeOnFail: false,
-      timeout: QueuePaymentEventUseCase.DEFAULT_JOB_TIMEOUT_MS,
       priority: "high",
     };
 
-    // --- Enqueue job
+    // --- Enqueue the typed internal payload (never a raw provider envelope)
     try {
       await this.queueService.enqueueJob(
         QueuePaymentEventUseCase.DEFAULT_QUEUE_NAME,
-        parsedPayload,
+        paymentEvent,
         jobOptions,
       );
 

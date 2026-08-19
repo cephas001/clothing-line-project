@@ -122,22 +122,28 @@ export class FetchEmbeddedInsuranceQuoteUseCase {
       );
     }
 
-    // Defensive: ensure returned premium is an integer minor unit or null/zero
+    // Fail-closed: an invalid premium from the provider must NEVER become a
+    // financial value in the authoritative checkout breakdown. Normalizing a
+    // malformed premium to 0 would silently zero a component of the charge the
+    // payment obligation freezes, so the request fails instead.
     if (!Number.isInteger(premiumMinor) || premiumMinor < 0) {
-      this.logger.warn(
-        "Insurance service returned unexpected premium shape; normalizing to 0",
-        {
-          cartId,
-          returnedPremium: premiumMinor,
-        },
+      this.logger.error("Insurance service returned an invalid premium", {
+        cartId,
+        returnedPremium: premiumMinor,
+      });
+      throw new DomainError(
+        "EXTERNAL_SERVICE_ERROR",
+        "Insurance provider returned an invalid premium.",
       );
-      premiumMinor = 0;
     }
 
     // --- Optionally persist quote metadata on cart (non-mandatory)
     try {
       const persist = async () => {
-        // Attach lastInsuranceQuoteMinor and lastInsuranceQuoteAt to cart metadata
+        // Persist the server-computed premium durably on the cart (the
+        // authoritative source the checkout total reads) and mirror it into
+        // metadata for backwards compatibility.
+        cart.recordInsuranceQuote(premiumMinor);
         cart.setMetadata("lastInsuranceQuoteMinor", premiumMinor);
         cart.setMetadata("lastInsuranceQuoteAt", new Date().toISOString());
         await this.cartRepository.save(cart);

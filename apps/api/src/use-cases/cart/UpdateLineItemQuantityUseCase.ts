@@ -213,6 +213,19 @@ export class UpdateLineItemQuantityUseCase {
         );
       }
 
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        // Concurrent cart mutation won the race; surface a retryable conflict.
+        this.logger.warn("Cart was concurrently modified; retry the request", {
+          err,
+          cartId,
+          lineItemId,
+        });
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
+
       this.logger.error(
         "Failed to persist cart after updating line item quantity",
         { err, cartId, lineItemId },

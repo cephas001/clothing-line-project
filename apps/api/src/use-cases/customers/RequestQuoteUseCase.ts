@@ -200,6 +200,12 @@ export class RequestQuoteUseCase {
           "Database timeout while saving quote.",
         );
       }
+      if (repoErr?.code === RepositoryErrorCode.LOCKED) {
+        throw new DomainError(
+          "LOCK_ACQUISITION_FAILED",
+          "Cart was concurrently modified; retry the request.",
+        );
+      }
 
       throw new DomainError(
         "INTERNAL_ERROR",

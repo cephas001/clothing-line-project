@@ -4,6 +4,9 @@ packages:
   - "packages/*"
 allowBuilds:
   '@scarf/scarf': true
+  bcrypt: true
   esbuild: true
+  msgpackr-extract: true
+  protobufjs: true
   sharp: true
   unrs-resolver: true
