@@ -9,6 +9,11 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
+import { readWishlist, writeWishlist } from "@/lib/wishlistStorage";
+
+// F6.6-G004: persistence rules live in the pure lib module — storage is
+// untrusted input, so only an array of strings is ever accepted and a
+// malformed or wrong-shaped value fails safe to [] (never throws in render).
 
 interface WishlistContextValue{
     items: string[],
@@ -18,26 +23,13 @@ interface WishlistContextValue{
 
 const WishlistContext = createContext<WishlistContextValue | undefined>(undefined);
 
-// The key used in localStorage to persist the wishlist across page reloads.
-const STORAGE_KEY = "QUHA-wishlist";
-
 export function WishlistProvider({ children }: { children: ReactNode }){
-  const [items, setItems] = useState<string[]>([])
-  useEffect(() => {
-    try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) setItems(JSON.parse(saved));
-    } catch {
-        // ignore
-    }
-  }, []);
+  // Read the persisted wishlist once, lazily, at first render. The reader is
+  // SSR-guarded, so it never touches storage during server rendering.
+  const [items, setItems] = useState<string[]>(readWishlist);
 
   useEffect(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
-      } catch {
-        // 
-      }
+    writeWishlist(items);
   }, [items]);
 
   const toggle = useCallback((productId: string) => {

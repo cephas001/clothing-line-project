@@ -1,264 +1,214 @@
+// apps/storefront/src/lib/product.ts
+//
+// Catalog projections: backend `Product` DTO -> UI `ProductView`.
+//
+// The hardcoded 16-product demo catalog (RAW_PRODUCTS), the handle->slug map
+// (DEV_CATEGORY) and PLACEHOLDER_PRICE are GONE. Products and categories are
+// fetched from the API (src/lib/api/catalog.ts) and reduced through these pure
+// functions. No business logic lives here:
+//   - `priceMinor` is the AUTHORITATIVE regional price from the server — never
+//     invented, derived, or substituted.
+//   - availability is a projection of the server's inventory fields
+//     (inventoryQuantity / allowBackorder).
+//   - media urls and category names come from the server's media[] / category
+//     tree.
+//   - No totals are ever computed (that is server-authoritative).
 
 import type {
+  Category,
   Product,
-  ProductView,
-  VariantView,
-  CategorySlug,
-} from "./types";
+  ProductVariant,
+} from "@clothing-line-project/shared-types";
+import type { MediaView, ProductView, VariantView } from "./types";
+import { DEFAULT_REGION_CURRENCY } from "./api/client";
 
-const DEFAULT_CURRENCY = "ngn";
+export const DEFAULT_CURRENCY = DEFAULT_REGION_CURRENCY;
 
-const RAW_PRODUCTS: Product[] = [
-  // --- JACKETS ---
-  {
-    id: "11111111-1111-1111-1111-111111111111",
-    title: "Shadow Work Jacket",
-    handle: "shadow-work-jacket",
-    description: "Waxed-cotton chore jacket with triple-needle stitching. Full sleeves, boxy fit.",
-    variants: [
-      { id: "v-shadow-s", productId: "11111111-1111-1111-1111-111111111111", sku: "GW-JK-001-S", inventoryQuantity: 4, allowBackorder: false, version: 1 },
-      { id: "v-shadow-m", productId: "11111111-1111-1111-1111-111111111111", sku: "GW-JK-001-M", inventoryQuantity: 6, allowBackorder: false, version: 1 },
-      { id: "v-shadow-l", productId: "11111111-1111-1111-1111-111111111111", sku: "GW-JK-001-L", inventoryQuantity: 0, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "22222222-2222-2222-2222-222222222222",
-    title: "Cutoff Utility Vest",
-    handle: "cutoff-utility-vest",
-    description: "Sleeveless canvas vest with mapped chest pockets and a raw hem.",
-    variants: [
-      { id: "v-vest-s", productId: "22222222-2222-2222-2222-222222222222", sku: "GW-JK-002-S", inventoryQuantity: 8, allowBackorder: false, version: 1 },
-      { id: "v-vest-m", productId: "22222222-2222-2222-2222-222222222222", sku: "GW-JK-002-M", inventoryQuantity: 5, allowBackorder: false, version: 1 },
-      { id: "v-vest-l", productId: "22222222-2222-2222-2222-222222222222", sku: "GW-JK-002-L", inventoryQuantity: 3, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "12121212-1212-1212-1212-121212121212",
-    title: "Ash Bomber Jacket",
-    handle: "ash-bomber",
-    description: "Cropped bomber in heavy cotton twill with ribbed cuffs and a matte zipper.",
-    variants: [
-      { id: "v-bomber-s", productId: "12121212-1212-1212-1212-121212121212", sku: "GW-JK-003-S", inventoryQuantity: 5, allowBackorder: false, version: 1 },
-      { id: "v-bomber-m", productId: "12121212-1212-1212-1212-121212121212", sku: "GW-JK-003-M", inventoryQuantity: 7, allowBackorder: false, version: 1 },
-      { id: "v-bomber-l", productId: "12121212-1212-1212-1212-121212121212", sku: "GW-JK-003-L", inventoryQuantity: 4, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "13131313-1313-1313-1313-131313131313",
-    title: "Forge Field Jacket",
-    handle: "forge-field-jacket",
-    description: "Multi-pocket field jacket with reinforced elbows and adjustable waist tabs.",
-    variants: [
-      { id: "v-forge-s", productId: "13131313-1313-1313-1313-131313131313", sku: "GW-JK-004-S", inventoryQuantity: 3, allowBackorder: false, version: 1 },
-      { id: "v-forge-m", productId: "13131313-1313-1313-1313-131313131313", sku: "GW-JK-004-M", inventoryQuantity: 6, allowBackorder: false, version: 1 },
-      { id: "v-forge-l", productId: "13131313-1313-1313-1313-131313131313", sku: "GW-JK-004-L", inventoryQuantity: 2, allowBackorder: false, version: 1 },
-    ],
-  },
+function isAvailable(
+  variant: Pick<ProductVariant, "inventoryQuantity" | "allowBackorder">,
+): boolean {
+  return variant.inventoryQuantity > 0 || variant.allowBackorder;
+}
 
-  // --- JEWELRY ---
-  {
-    id: "44444444-4444-4444-4444-444444444444",
-    title: "Signal Cuff",
-    handle: "signal-cuff",
-    description: "Solid, hand-finished cuff with a brushed face.",
-    variants: [
-      { id: "v-cuff-os", productId: "44444444-4444-4444-4444-444444444444", sku: "GW-JW-001-OS", inventoryQuantity: 5, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "55555555-5555-5555-5555-555555555555",
-    title: "Heavy Link Chain",
-    handle: "link-chain",
-    description: "6mm curb chain with a hidden box clasp.",
-    variants: [
-      { id: "v-chain-os", productId: "55555555-5555-5555-5555-555555555555", sku: "GW-JW-002-OS", inventoryQuantity: 20, allowBackorder: true, version: 1 },
-    ],
-  },
-  {
-    id: "66666666-6666-6666-6666-666666666666",
-    title: "Monolith Signet Ring",
-    handle: "monolith-ring",
-    description: "Flat-top signet with a matte-blasted face.",
-    variants: [
-      { id: "v-ring-8", productId: "66666666-6666-6666-6666-666666666666", sku: "GW-JW-003-8", inventoryQuantity: 3, allowBackorder: false, version: 1 },
-      { id: "v-ring-9", productId: "66666666-6666-6666-6666-666666666666", sku: "GW-JW-003-9", inventoryQuantity: 7, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "77777777-7777-7777-7777-777777777771",
-    title: "Obsidian Pendant",
-    handle: "obsidian-pendant",
-    description: "Geometric matte-black pendant on a heavy curb chain.",
-    variants: [
-      { id: "v-pendant-os", productId: "77777777-7777-7777-7777-777777777771", sku: "GW-JW-004-OS", inventoryQuantity: 8, allowBackorder: false, version: 1 },
-    ],
-  },
+/** Normalize a category name into a stable slug (e.g. "Jackets" -> "jackets"). */
+export function categorySlugOf(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "all";
+}
 
-  // --- ACCESSORIES ---
-  {
-    id: "77777777-7777-7777-7777-777777777777",
-    title: "Bracket Web Belt",
-    handle: "bracket-belt",
-    description: "Woven cotton belt with a matte-black anodized bracket buckle.",
-    variants: [
-      { id: "v-belt-30", productId: "77777777-7777-7777-7777-777777777777", sku: "GW-AC-001-30", inventoryQuantity: 10, allowBackorder: false, version: 1 },
-      { id: "v-belt-34", productId: "77777777-7777-7777-7777-777777777777", sku: "GW-AC-001-34", inventoryQuantity: 6, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "88888888-8888-8888-8888-888888888888",
-    title: "Sling Pouch",
-    handle: "sling-pouch",
-    description: "Compact ripstop sling with a magnetic snap and adjustable webbing strap.",
-    variants: [
-      { id: "v-pouch-os", productId: "88888888-8888-8888-8888-888888888888", sku: "GW-AC-002-OS", inventoryQuantity: 12, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "99999999-9999-9999-9999-999999999999",
-    title: "Forge Cap",
-    handle: "forge-cap",
-    description: "Structured six-panel cap with tonal embroidery and an adjustable strap.",
-    variants: [
-      { id: "v-cap-os", productId: "99999999-9999-9999-9999-999999999999", sku: "GW-AC-003-OS", inventoryQuantity: 15, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "10101010-1010-1010-1010-101010101010",
-    title: "Utility Tote",
-    handle: "utility-tote",
-    description: "Heavy canvas tote with reinforced base and internal zip pocket.",
-    variants: [
-      { id: "v-tote-os", productId: "10101010-1010-1010-1010-101010101010", sku: "GW-AC-004-OS", inventoryQuantity: 9, allowBackorder: false, version: 1 },
-    ],
-  },
-  
-  // --- OFF-DUTIES ---
-  {
-    id: "99999999-9999-9999-9999-999999999999",
-    title: "Bracket Keyholder",
-    handle: "bracket-keyholder",
-    description: "Machined brass keyholder with a leather pull. Heavy in the pocket.",
-    variants: [
-      { id: "v-keyh-os", productId: "99999999-9999-9999-9999-999999999999", sku: "GW-OD-001-OS", inventoryQuantity: 14, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-    title: "Static Weave Rug",
-    handle: "static-weave-rug",
-    description: "Hand-loomed accent rug in a heavy monochrome weave. 90 × 150cm.",
-    variants: [
-      { id: "v-rug-os", productId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", sku: "GW-OD-002-OS", inventoryQuantity: 4, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-    title: "Concrete Vessel",
-    handle: "concrete-vessel",
-    description: "Cast-concrete display vessel. Raw finish, sealed interior.",
-    variants: [
-      { id: "v-vessel-s", productId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", sku: "GW-OD-003-S", inventoryQuantity: 6, allowBackorder: false, version: 1 },
-      { id: "v-vessel-l", productId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", sku: "GW-OD-003-L", inventoryQuantity: 2, allowBackorder: false, version: 1 },
-    ],
-  },
-  {
-    id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
-    title: "Matte Incense Block",
-    handle: "matte-incense-block",
-    description: "Solid ash-wood incense holder with a low profile and charcoal finish.",
-    variants: [
-      { id: "v-incense-os", productId: "cccccccc-cccc-cccc-cccc-cccccccccccc", sku: "GW-OD-004-OS", inventoryQuantity: 11, allowBackorder: false, version: 1 },
-    ],
-  },
-];
-
-// Replace with the /store/product-categories endpoint + category_id filtering later.
-const DEV_CATEGORY: Record<string, CategorySlug> = {
-  // Jackets
-  "shadow-work-jacket": "jackets",
-  "cutoff-utility-vest": "jackets",
-  "ash-bomber": "jackets",
-  "forge-field-jacket": "jackets",
-
-  // Jewelry
-  "signal-cuff": "jewelry",
-  "link-chain": "jewelry",
-  "monolith-ring": "jewelry",
-  "obsidian-pendant": "jewelry",
-
-  // Accessories
-  "bracket-belt": "accessories",
-  "sling-pouch": "accessories",
-  "forge-cap": "accessories",
-  "utility-tote": "accessories",
-
-  // Off-Duties
-  "bracket-keyholder": "off-duties",
-  "static-weave-rug": "off-duties",
-  "concrete-vessel": "off-duties",
-  "matte-incense-block": "off-duties",
-};
-
-
- const PLACEHOLDER_PRICE = 0;
-
-// API Product -> friendly ProductView.
-function toProductView(
-  p: Product,
-  category: CategorySlug,
-  preferredCurrency = DEFAULT_CURRENCY
-): ProductView {
-  const variants = p.variants ?? [];
-
-  const isAvailable = (v: { inventoryQuantity: number; allowBackorder: boolean }) =>
-    v.inventoryQuantity > 0 || v.allowBackorder;
-
-  const totalStock = variants.reduce((sum, v) => sum + v.inventoryQuantity, 0);
-
-  const viewVariants: VariantView[] = variants.map((v) => ({
-    id: v.id,
-    sku: v.sku,
-    label: v.sku.split("-").pop() ?? v.sku,
-    available: isAvailable(v),
+/**
+ * F7.1 / G034: map the server's ordered media[] to an N-slot gallery — 0, 1
+ * or many entries, in server display order. Alt text is the server altText
+ * when meaningful (non-blank), else a positional fallback built from the
+ * product title so every image has accessible, non-empty alt text.
+ */
+export function mediaFromMedia(
+  media: Product["media"] = [],
+  fallbackTitle = "Product",
+): MediaView[] {
+  return (media ?? []).map((item, index) => ({
+    url: item.url,
+    alt:
+      item.altText && item.altText.trim() !== ""
+        ? item.altText.trim()
+        : `${fallbackTitle} — image ${index + 1}`,
   }));
+}
 
+export function toVariantView(variant: ProductVariant): VariantView {
   return {
-    id: p.id,
-    slug: p.handle,
-    name: p.title,
-    description: p.description ?? "",
-    priceAmount:PLACEHOLDER_PRICE,
-    currencyCode: DEFAULT_CURRENCY,
-    images: { studio: "", styled: "" },
-    // If no variants, treat the product as sold out
-    isSoldOut: variants.length === 0 || !variants.some(isAvailable),
-    sellingFast: totalStock > 0 && totalStock <= 8,
-    variants: viewVariants,
-    category
+    id: variant.id,
+    sku: variant.sku,
+    label: variant.sku.split("-").pop() ?? variant.sku,
+    available: isAvailable(variant),
+    priceMinor: variant.priceMinor,
+    inventoryQuantity: variant.inventoryQuantity,
+    allowBackorder: variant.allowBackorder,
   };
 }
 
-// ---- Helpers the pages call ------------------------------------------------
-export function getAllProducts(): ProductView[] {
-  return RAW_PRODUCTS.map((p) => toProductView(p, DEV_CATEGORY[p.handle] ?? "off-duties"));
+/**
+ * Project a backend Product into the UI view. The representative price is the
+ * first available variant's authoritative priceMinor (falling back to the first
+ * variant). isSoldOut/sellingFast are projections of server inventory fields.
+ */
+export function toProductView(
+  product: Product,
+  categoryName = "",
+): ProductView {
+  const variants = (product.variants ?? []).map(toVariantView);
+  const firstAvailable =
+    variants.find((variant) => variant.available) ?? variants[0] ?? null;
+  const totalStock = variants.reduce(
+    (sum, variant) => sum + variant.inventoryQuantity,
+    0,
+  );
+
+  return {
+    id: product.id,
+    slug: product.handle,
+    name: product.title,
+    description: product.description ?? "",
+    priceMinor: firstAvailable?.priceMinor ?? null,
+    currencyCode: DEFAULT_CURRENCY,
+    media: mediaFromMedia(product.media, product.title),
+    isSoldOut: variants.length === 0 || !variants.some((variant) => variant.available),
+    sellingFast: totalStock > 0 && totalStock <= 8,
+    variants,
+    category: categorySlugOf(categoryName),
+    categoryIds: [...(product.categoryIds ?? [])],
+  };
 }
 
-export function getProductBySlug(slug: string): ProductView | undefined {
-  const raw = RAW_PRODUCTS.find((p) => p.handle === slug);
-  return raw ? toProductView(raw, DEV_CATEGORY[raw.handle] ?? "off-duties") : undefined;
+/** Resolve a product's first category name from the category tree. */
+export function categoryNameOf(
+  product: Product,
+  categories: Category[],
+): string {
+  const id = (product.categoryIds ?? [])[0];
+  if (!id) return "";
+  return categories.find((category) => category.id === id)?.name ?? "";
 }
 
-export function getByCategory(category: CategorySlug): ProductView[] {
-  return RAW_PRODUCTS
-    .filter((p) => DEV_CATEGORY[p.handle] === category)
-    .map((p) => toProductView(p, category));
+// -----------------------------------------------------------------------------
+// F7 / G012 — server-derived category navigation.
+//
+// `GET /store/product-categories` is the AUTHORITATIVE source for navigation
+// (Header, Shop, Footer). No category names or slugs are hardcoded anywhere;
+// an empty tree honestly yields no category entries. The tree is flat with
+// parent pointers; navigation renders TOP-LEVEL categories and filtering
+// matches a product against a category's whole descendant group.
+// -----------------------------------------------------------------------------
+
+/** A navigation entry derived from a server category. */
+export interface NavCategory {
+  id: string;
+  name: string;
+  slug: string;
 }
 
-export function getRelated(product: ProductView, limit = 4): ProductView[] {
-  const cat = DEV_CATEGORY[product.slug];
-  return RAW_PRODUCTS
-    .filter((p) => DEV_CATEGORY[p.handle] === cat && p.handle !== product.slug)
-    .map((p) => toProductView(p, cat))
+/**
+ * Top-level navigation entries (parentCategoryId is null). A category whose
+ * parent is missing from the payload is treated as top-level — the honest
+ * fallback for partial trees. Order follows the server payload.
+ */
+export function navCategories(categories: Category[]): NavCategory[] {
+  const known = new Set(categories.map((category) => category.id));
+  return categories
+    .filter(
+      (category) =>
+        !category.parentCategoryId || !known.has(category.parentCategoryId),
+    )
+    .map((category) => ({
+      id: category.id,
+      name: category.name,
+      slug: categorySlugOf(category.name),
+    }));
+}
+
+/**
+ * The set of ids for a category AND all its descendants (cycle-safe). Used to
+ * match products that belong to any member of the group.
+ */
+export function categoryGroupIds(
+  categoryId: string,
+  categories: Category[],
+): Set<string> {
+  const ids = new Set<string>([categoryId]);
+  let frontier = [categoryId];
+  while (frontier.length > 0) {
+    const next = categories
+      .filter(
+        (category) =>
+          category.parentCategoryId != null &&
+          frontier.includes(category.parentCategoryId) &&
+          !ids.has(category.id),
+      )
+      .map((category) => category.id);
+    for (const id of next) ids.add(id);
+    frontier = next;
+  }
+  return ids;
+}
+
+export function toProductViews(
+  products: Product[],
+  categories: Category[],
+): ProductView[] {
+  return products.map((product) =>
+    toProductView(product, categoryNameOf(product, categories)),
+  );
+}
+
+export function findBySlug(
+  views: ProductView[],
+  slug: string,
+): ProductView | undefined {
+  return views.find((view) => view.slug === slug);
+}
+
+export function byCategory(
+  views: ProductView[],
+  category: string,
+): ProductView[] {
+  return views.filter((view) => view.category === category);
+}
+
+/**
+ * Same-category fallback for "You may also like". The backend's related-
+ * products endpoint is not wired (no recommendation adapter), so this derives
+ * related items from the fetched browse list — never faking a backend result.
+ */
+export function relatedProducts(
+  views: ProductView[],
+  product: ProductView,
+  limit = 4,
+): ProductView[] {
+  return views
+    .filter((view) => view.category === product.category && view.id !== product.id)
     .slice(0, limit);
 }

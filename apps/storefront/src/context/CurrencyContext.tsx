@@ -3,15 +3,17 @@
 import {
   createContext,
   useContext,
-  useState,
   useMemo,
   type ReactNode,
 } from "react";
 import { formatPrice } from "@/lib/format";
-// Creating the currency object
+
+// The storefront is region-scoped (NGN): there is no selectable currency. This
+// context only exposes the shared display formatter so views never re-derive
+// money formatting themselves. Currency is ALWAYS the code of the
+// server-authoritative amount (order.currency / region currency) — never a
+// client-side choice.
 interface CurrencyContextValue {
-    currency: string;
-    setCurrency: (c: string) => void;
     // format function
     format: (amount: number, currencyCode: string) => string;
 }
@@ -20,15 +22,11 @@ interface CurrencyContextValue {
 const CurrencyContext = createContext<CurrencyContextValue | undefined>(undefined);
 
 export function CurrencyProvider({ children }: { children: ReactNode }) {
-    const [currency, setCurrency] = useState<string>("ngn");
-    
     const value = useMemo<CurrencyContextValue>(
         () => ({
-            currency,
-            setCurrency,
             format: (amount, currencyCode) => formatPrice(amount, currencyCode),
         }),
-        [currency]
+        []
     )
     return (
         <CurrencyContext.Provider value={value}>
