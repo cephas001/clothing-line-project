@@ -76,6 +76,12 @@ export class QueueLogisticsEventUseCase {
       courier: logisticsEvent.courier ?? null,
       status: logisticsEvent.status ?? null,
       occurredAt: logisticsEvent.occurredAt ?? null,
+      // Only the explicit false is carried into the queue contract; an absent
+      // notifyCustomer (the Shipbubble default) stays an OMITTED key so the
+      // queue payload is byte-identical to the pre-courier contract.
+      ...(logisticsEvent.notifyCustomer === false
+        ? { notifyCustomer: false }
+        : {}),
     };
     const validated = parseLogisticsEventJobPayload(payload);
     const eventKey = validated.eventKey;

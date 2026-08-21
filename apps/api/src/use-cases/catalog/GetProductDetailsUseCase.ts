@@ -6,10 +6,15 @@ import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
+import { IPricingService } from "@api/domain/interfaces/services/IPricingService";
 import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+import {
+  ProductWithRegionalPricing,
+  resolveProductRegionalPricing,
+} from "./ProductWithPricing";
 
 /**
  * Use case: fetch a single product's details within a specific sales channel and region context.
@@ -18,9 +23,12 @@ import {
  * - Validate and normalize inputs (productId, salesChannelId, regionId).
  * - Support optional projection/expansion (fields, expand) while guarding against abusive input.
  * - Delegate the read to the product read repository which enforces visibility and access rules.
- * - Map repository/read-adapter errors to DomainError with clear domain codes.
+ * - Resolve each variant's AUTHORITATIVE regional price via the pricing service
+ *   (fresh from Postgres; never the product read cache).
+ * - Map repository/read-adapter/pricing errors to DomainError with clear domain codes.
  * - Emit a non-blocking audit log entry recording the read for observability.
- * - Return the Product domain projection or throw PRODUCT_NOT_FOUND when not visible/absent.
+ * - Return the Product paired with its priceByVariant map, or throw
+ *   PRODUCT_NOT_FOUND when not visible/absent.
  */
 export interface GetProductDetailsInput {
   productId: string;
@@ -40,9 +48,10 @@ export class GetProductDetailsUseCase {
     private readonly auditLogService: IAuditLogService,
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
+    private readonly pricingService: IPricingService,
   ) {}
 
-  async execute(input: GetProductDetailsInput): Promise<Product> {
+  async execute(input: GetProductDetailsInput): Promise<ProductWithRegionalPricing> {
     // --- Normalize and validate inputs
     const productId = (input.productId ?? "").trim();
     const salesChannelId = (input.salesChannelId ?? "").trim();
@@ -131,6 +140,16 @@ export class GetProductDetailsUseCase {
       );
     }
 
+    // --- Resolve the authoritative regional price per variant (fresh from
+    // Postgres via the pricing service; never from the product read cache).
+    // A pricing failure fails the whole read (fail-closed).
+    const priced = await resolveProductRegionalPricing(
+      product,
+      regionId,
+      this.pricingService,
+      this.logger,
+    );
+
     // --- Audit log (non-blocking)
     try {
       await this.auditLogService.logAction(actorId, "PRODUCT_VIEWED", {
@@ -156,6 +175,6 @@ export class GetProductDetailsUseCase {
       salesChannelId,
       regionId,
     });
-    return product;
+    return priced;
   }
 }

@@ -13,6 +13,11 @@
 //      the event is classified as operational reconciliation
 //      (LOGISTICS_EVENT_FULFILLMENT_NOT_FOUND, retryable but bounded by the
 //      producer's attempts) — a fulfillment is NEVER fabricated from a webhook.
+//      The ONE exception is the generic `courier` tracking provider (the
+//      /store/webhooks/courier-tracking webhook), whose payload carries NO
+//      provider shipment identity: for `provider === "courier"` events the
+//      local fulfillment is resolved by `trackingNumber` as a fallback (the
+//      tracking number IS the courier's only cross-boundary identity).
 //   3. Unknown event types are safely acknowledged + audited — they never crash
 //      the worker and never enter a retry loop.
 //   4. If the event carries an occurrence timestamp, stale events (older than
@@ -150,6 +155,52 @@ export class ProcessCourierTrackingEventUseCase {
     // NEVER fabricate a fulfillment from a webhook. This is retryable (the
     // fulfillment may be written moments later by dispatch) but bounded by the
     // producer's attempts — never an infinite retry loop.
+    //
+    // COURIER PROVIDER FALLBACK: the generic courier-tracking webhook payload
+    // carries NO provider shipment identity (only a tracking number). For
+    // `provider === "courier"` events, when the providerShipmentId lookup
+    // misses (the mapper projects providerShipmentId = trackingNumber), the
+    // local fulfillment is resolved by trackingNumber — the courier's only
+    // cross-boundary identity. The lookup is scoped to courier events so the
+    // shipbubble invariant (provider shipment id ONLY) is preserved.
+    let fallbackResolved = false;
+    if (!fulfillment && event.provider === "courier" && trackingNumber) {
+      try {
+        fulfillment =
+          await this.fulfillmentRepository.findByTrackingNumber(trackingNumber);
+        fallbackResolved = fulfillment !== null;
+      } catch (err: unknown) {
+        const repoErr = err as RepositoryError | undefined;
+        this.logger.warn(
+          "Failed to resolve fulfillment by tracking number for courier event",
+          { err, trackingNumber, eventKey, actorId },
+        );
+        if (repoErr?.code === RepositoryErrorCode.CONNECTION) {
+          throw new DomainError(
+            "INTERNAL_ERROR",
+            "Database connection error while resolving fulfillment by tracking number.",
+          );
+        }
+        if (repoErr?.code === RepositoryErrorCode.TIMEOUT) {
+          throw new DomainError(
+            "INTERNAL_ERROR",
+            "Database timeout while resolving fulfillment by tracking number.",
+          );
+        }
+        throw new DomainError(
+          "INTERNAL_ERROR",
+          "Failed to resolve fulfillment for courier tracking event.",
+        );
+      }
+    }
+
+    if (fallbackResolved) {
+      this.logger.info(
+        "Courier tracking event resolved fulfillment by tracking number",
+        { trackingNumber, fulfillmentId: fulfillment?.id, eventKey, actorId },
+      );
+    }
+
     if (!fulfillment) {
       this.logger.warn(
         "Logistics event references unknown provider shipment id; classifying for operational reconciliation",
@@ -374,7 +425,8 @@ export class ProcessCourierTrackingEventUseCase {
         if (
           trackingChanged &&
           nextTrackingState !== null &&
-          notificationContext
+          notificationContext &&
+          event.notifyCustomer !== false
         ) {
           const trackingIntent: NotificationIntent = {
             type: "tracking_update",

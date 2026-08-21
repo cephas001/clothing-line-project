@@ -7,6 +7,7 @@
 import { AddCartLineItemUseCase } from "@api/use-cases/cart/AddCartLineItemUseCase";
 import { AddCustomLineItemUseCase } from "@api/use-cases/cart/AddCustomLineItemUseCase";
 import { ApplyDiscountCodeUseCase } from "@api/use-cases/cart/ApplyDiscountCodeUseCase";
+import { GetCartUseCase } from "@api/use-cases/cart/GetCartUseCase";
 import { InitializeCartSessionUseCase } from "@api/use-cases/cart/InitializeCartSessionUseCase";
 import { MergeGuestCartToCustomerUseCase } from "@api/use-cases/cart/MergeGuestCartToCustomerUseCase";
 import { PruneAbandonedCartsUseCase } from "@api/use-cases/cart/PruneAbandonedCartsUseCase";
@@ -18,6 +19,7 @@ export interface CartUseCases {
   addCartLineItem?: AddCartLineItemUseCase;
   addCustomLineItem: AddCustomLineItemUseCase;
   applyDiscountCode: ApplyDiscountCodeUseCase;
+  getCart: GetCartUseCase;
   initializeCartSession: InitializeCartSessionUseCase;
   mergeGuestCartToCustomer: MergeGuestCartToCustomerUseCase;
   pruneAbandonedCarts: PruneAbandonedCartsUseCase;
@@ -44,6 +46,12 @@ export function buildCartUseCases(
     auditLogService,
     logger,
     transactionManager,
+  );
+  const getCart = new GetCartUseCase(
+    deps.cartRepository,
+    auditLogService,
+    idGenerator,
+    logger,
   );
   const initializeCartSession = new InitializeCartSessionUseCase(
     deps.cartRepository,
@@ -104,6 +112,7 @@ export function buildCartUseCases(
   report.wiredUseCases(
     "AddCustomLineItemUseCase",
     "ApplyDiscountCodeUseCase",
+    "GetCartUseCase",
     "InitializeCartSessionUseCase",
     "MergeGuestCartToCustomerUseCase",
     "PruneAbandonedCartsUseCase",
@@ -115,6 +124,7 @@ export function buildCartUseCases(
     addCartLineItem,
     addCustomLineItem,
     applyDiscountCode,
+    getCart,
     initializeCartSession,
     mergeGuestCartToCustomer,
     pruneAbandonedCarts,

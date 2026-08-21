@@ -461,10 +461,12 @@ describe("bootstrap diagnostic summaries are ASCII-safe end to end", () => {
       // ASCII separators are present.
       expect(summary).toContain("Unavailable - missing infrastructure capability:");
       expect(summary).toContain("-> IAuthorizationService");
-      expect(summary).toContain("-> IPaymentService (set PAYSTACK_SECRET_KEY)");
-      // Classification semantics preserved (missing infrastructure + configuration).
+      // With all external-service credentials configured, payment/shipping are
+      // wired (not config-gated) and no configuration gaps remain.
+      expect(summary).toContain("Payment initialization: mounted");
+      // Classification semantics preserved (missing infrastructure only).
       expect(summary).toContain("Missing infrastructure: 6");
-      expect(summary).toContain("Missing configuration: 7");
+      expect(summary).toContain("Missing configuration: 0");
       expect(summary).toContain("Deferred by design: 0");
     } finally {
       // Release Redis/queue/pool handles so the process can exit cleanly.

@@ -42,10 +42,16 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   UNSUPPORTED_OPERATION: 400,
 
   // --- 401 Unauthenticated: no/invalid credentials or token -----------------
+  // Signature-verification failures are treated as unauthenticated at the
+  // webhook boundary: a provider whose signature does not verify must be told
+  // the request was not accepted (and should retry with the correct signature),
+  // never an opaque 500. The same table serves every webhook router.
   UNAUTHORIZED: 401,
   UNAUTHORIZED_ACCESS: 401,
   INVALID_CREDENTIALS: 401,
   INVALID_SIGNATURE: 401,
+  PAYMENT_VERIFICATION_FAILED: 401,
+  LOGISTICS_VERIFICATION_FAILED: 401,
 
   // --- 402 Payment Required -------------------------------------------------
   PAYMENT_REQUIRED: 402,
@@ -91,8 +97,6 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   EXTERNAL_SERVICE_ERROR: 500,
   LOCK_ACQUISITION_FAILED: 500,
   JOB_PROCESSING_ERROR: 500,
-  PAYMENT_VERIFICATION_FAILED: 500,
-  LOGISTICS_VERIFICATION_FAILED: 500,
   SOURCING_FAILED: 500,
   SHIPMENT_REQUIRES_RECONCILIATION: 500,
 };

@@ -47,6 +47,11 @@ export interface AppConfig {
   /** HTTP port the Express server listens on. Default: 5000. */
   port: number;
   /**
+   * Browser origin permitted by the CORS policy (FRONTEND_URL). Absent =>
+   * any origin is allowed (development posture; a warning is logged at boot).
+   */
+  frontendUrl?: string;
+  /**
    * Redis connection URL, shared by the session-revocation ioredis client and
    * the BullMQ connection config. Development-only default: redis://localhost:6379.
    */
@@ -106,6 +111,17 @@ export interface AppConfig {
    * fallback.
    */
   shipbubbleWebhookSecret?: string;
+  /**
+   * Courier-tracking webhook signature secret. OPTIONAL here, like
+   * SHIPBUBBLE_WEBHOOK_SECRET — the courier-tracking webhook router is only
+   * mounted when it is present. This is the dedicated secret used to sign
+   * courier-tracking webhook bodies (HMAC-SHA512 over the raw request bytes,
+   * delivered in the `x-courier-signature` header). It MUST never be derived
+   * from or shared with any API key. There is NO default — a production
+   * webhook signing secret is never defaulted. Absent => the webhook endpoint
+   * is not mounted (requests receive a 404), never a fallback.
+   */
+  courierTrackingWebhookSecret?: string;
   /** Shipbubble API base URL. Default: https://api.shipbubble.com (HTTPS enforced). */
   shipbubbleBaseUrl: string;
   /** Per-request Shipbubble timeout in milliseconds. Default: 10000. */
@@ -212,6 +228,7 @@ export function loadAppConfig(
   }
   return {
     port,
+    frontendUrl: (env.FRONTEND_URL ?? "").trim() || undefined,
     redisUrl: (env.REDIS_URL ?? "").trim() || DEFAULT_REDIS_URL,
     jwtSecret,
     jwtExpiresIn: env.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
@@ -227,6 +244,8 @@ export function loadAppConfig(
     shipbubbleApiKey: (env.SHIPBUBBLE_API_KEY ?? "").trim() || undefined,
     shipbubbleWebhookSecret:
       (env.SHIPBUBBLE_WEBHOOK_SECRET ?? "").trim() || undefined,
+    courierTrackingWebhookSecret:
+      (env.COURIER_TRACKING_WEBHOOK_SECRET ?? "").trim() || undefined,
     shipbubbleBaseUrl:
       (env.SHIPBUBBLE_BASE_URL ?? "").trim() || DEFAULT_SHIPBUBBLE_BASE_URL,
     shipbubbleTimeoutMs: parseShipbubbleTimeout(env.SHIPBUBBLE_TIMEOUT_MS),

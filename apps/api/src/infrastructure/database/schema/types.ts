@@ -181,6 +181,19 @@ export interface Database {
     sales_channel_id: string;
   };
 
+  /**
+   * F4 (M1) — Product media REFERENCES (never binaries). `sort_order` is the
+   * deterministic display order (lower first); `kind` defaults to "image".
+   */
+  product_media: {
+    id: string;
+    product_id: string;
+    url: string;
+    kind: string;
+    alt_text: string | null;
+    sort_order: number;
+  };
+
   /** domain/entities/Collection */
   collection: {
     id: string;

@@ -22,6 +22,7 @@ async function main(): Promise<void> {
     await import("./MigrationIdempotency.test");
     await import("./PricingTaxConstraints.test");
     await import("./InventoryConstraints.test");
+    await import("./StorefrontProvisioning.test");
 
     const result = await runAll();
     if (result.failed > 0) {

@@ -2,6 +2,7 @@
 
 import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { ProductVariant } from "@api-domain-entities/ProductVariant";
+import { ProductMedia } from "@api-domain-entities/ProductMedia";
 
 /**
  * ProductProps
@@ -15,6 +16,7 @@ export interface ProductProps {
   variants?: ProductVariant[];
   categoryIds?: string[];
   salesChannelIds?: string[];
+  media?: ProductMedia[];
 }
 
 /**
@@ -43,6 +45,8 @@ export class Product {
   // Category and sales channel membership stored as sets to avoid duplicates
   private _categoryIds: Set<string>;
   private _salesChannelIds: Set<string>;
+  // Media references in display order (lowest sortOrder first)
+  private _media: ProductMedia[];
 
   // -------------------------
   // Constructor and validation
@@ -91,6 +95,10 @@ export class Product {
         if (id && id.trim()) this._salesChannelIds.add(id);
       });
     }
+
+    // Initialize media references (defensive copy; constructor trusts the
+    // ProductMedia value object's own invariant validation).
+    this._media = props.media ? Array.from(props.media) : [];
   }
 
   // -------------------------
@@ -212,5 +220,33 @@ export class Product {
    */
   get salesChannelIds(): string[] {
     return Array.from(this._salesChannelIds);
+  }
+
+  // -------------------------
+  // Media references
+  // -------------------------
+
+  /**
+   * assignMedia
+   * - Replace the product's media references with the provided list.
+   * - Ignores non-array input (defensive, matching the category/sales-channel
+   *   assign methods).
+   */
+  public assignMedia(media: ProductMedia[]): void {
+    this._media = (Array.isArray(media) ? media : []).map((entry) => entry);
+  }
+
+  /**
+   * media (getter)
+   * - Returns a defensive copy of media references in deterministic display
+   *   order (lowest sortOrder first, then id for stable ties).
+   */
+  get media(): ProductMedia[] {
+    return Array.from(this._media).sort((a, b) => {
+      if (a.sortOrder !== b.sortOrder) {
+        return a.sortOrder - b.sortOrder;
+      }
+      return a.id.localeCompare(b.id);
+    });
   }
 }

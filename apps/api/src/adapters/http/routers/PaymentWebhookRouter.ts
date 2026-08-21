@@ -38,11 +38,14 @@
 
 import express from "express";
 import type { ErrorRequestHandler, Request, Response } from "express";
-import { DomainError } from "@api/domain/entities/errors/DomainError";
 import type { ILogger } from "@api/domain/interfaces/shared/ILogger";
 import type { VerifyPaymentEventSignatureUseCase } from "@api/use-cases/checkout/VerifyPaymentEventSignatureUseCase";
 import type { QueuePaymentEventUseCase } from "@api/use-cases/checkout/QueuePaymentEventUseCase";
 import type { PaystackWebhookPayloadMapper } from "@api/infrastructure/services/PaystackWebhookPayloadMapper";
+import {
+  mapDomainErrorToHttp,
+  sendErrorResponse,
+} from "../errors";
 
 const WEBHOOK_BODY_LIMIT = "1mb";
 const SIGNATURE_HEADER = "x-paystack-signature";
@@ -108,15 +111,12 @@ export function createPaymentWebhookRouter(
         );
         res.status(200).json({ status: "ok", handled: true });
       } catch (err: unknown) {
-        const mapped = mapWebhookError(err);
+        const mapped = mapDomainErrorToHttp(err);
         deps.logger.warn("Payment webhook rejected", {
           status: mapped.status,
           code: mapped.code,
         });
-        res.status(mapped.status).json({
-          success: false,
-          error: { code: mapped.code, message: mapped.message },
-        });
+        sendErrorResponse(res, mapped);
       }
     },
   );
@@ -128,37 +128,6 @@ export function createPaymentWebhookRouter(
   return router;
 }
 
-/** Map a thrown error to an HTTP status + StandardError envelope fields. */
-function mapWebhookError(err: unknown): {
-  status: number;
-  code: string;
-  message: string;
-} {
-  if (err instanceof DomainError) {
-    switch (err.code) {
-      case "PAYMENT_VERIFICATION_FAILED":
-        return { status: 401, code: err.code, message: err.message };
-      case "VALIDATION_ERROR":
-      case "INVALID_INPUT":
-      case "INVALID_CURRENCY":
-      case "INVALID_PAYMENT_AMOUNT":
-        return { status: 400, code: err.code, message: err.message };
-      case "EXTERNAL_SERVICE_TIMEOUT":
-      case "EXTERNAL_SERVICE_UNAVAILABLE":
-      case "EXTERNAL_SERVICE_ERROR":
-      case "INTERNAL_ERROR":
-        return { status: 500, code: err.code, message: err.message };
-      default:
-        return { status: 500, code: err.code, message: err.message };
-    }
-  }
-  return {
-    status: 500,
-    code: "INTERNAL_ERROR",
-    message: "Internal server error.",
-  };
-}
-
 function rawBodyErrorHandler(logger: ILogger): ErrorRequestHandler {
   return (err: unknown, _req, res, _next) => {
     const status = isEntityTooLarge(err) ? 413 : 400;
@@ -166,12 +135,10 @@ function rawBodyErrorHandler(logger: ILogger): ErrorRequestHandler {
       status,
       bodyError: isEntityTooLarge(err) ? "too_large" : "unparseable",
     });
-    res.status(status).json({
-      success: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body.",
-      },
+    sendErrorResponse(res, {
+      status,
+      code: "VALIDATION_ERROR",
+      message: "Invalid request body.",
     });
   };
 }

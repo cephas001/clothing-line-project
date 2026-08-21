@@ -12,6 +12,7 @@ export type StandardError = components["schemas"]["StandardError"];
 // Catalog
 export type Product = components["schemas"]["Product"];
 export type ProductVariant = components["schemas"]["ProductVariant"];
+export type ProductMedia = components["schemas"]["ProductMedia"];
 export type ProductList = components["schemas"]["ProductList"];
 export type VariantAvailability = components["schemas"]["VariantAvailability"];
 export type Category = components["schemas"]["Category"];
@@ -25,6 +26,8 @@ export type AppliedPromotion = components["schemas"]["AppliedPromotion"];
 // Checkout
 export type ShippingAddress = components["schemas"]["ShippingAddress"];
 export type ShippingQuote = components["schemas"]["ShippingQuote"];
+export type ShippingOptionSelectedResponse =
+  components["schemas"]["ShippingOptionSelectedResponse"];
 export type InsuranceQuoteResponse =
   components["schemas"]["InsuranceQuoteResponse"];
 export type PaymentSessionResponse =
@@ -68,6 +71,8 @@ export type MergeGuestCartRequest =
   components["schemas"]["MergeGuestCartRequest"];
 export type SetShippingAddressRequest =
   components["schemas"]["SetShippingAddressRequest"];
+export type SelectShippingOptionRequest =
+  components["schemas"]["SelectShippingOptionRequest"];
 export type PaymentSessionRequest =
   components["schemas"]["PaymentSessionRequest"];
 export type PaystackWebhookEvent =

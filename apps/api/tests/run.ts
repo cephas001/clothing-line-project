@@ -28,6 +28,9 @@ import "./unit/inventory/DeterministicSourcingSelection.test";
 // --- Unit (L9 Part 2: product read cache — keys, serialization, fail-open) ---
 import "./unit/caching/ProductReadCache.test";
 
+// --- Unit (F4 pre-implementation M1: product media domain invariants) ---
+import "./unit/catalog/ProductMedia.test";
+
 // --- Integration (authoritative payment lifecycle through the use cases) ---
 import "./integration/payment/AuthoritativeAmount.test";
 import "./integration/payment/HistoricalIntegrity.test";
@@ -80,6 +83,9 @@ import "./contract/EndpointConformance.test";
 // --- Contract (API-L1 Phase 9/10: canonical request/error pipeline) ---
 import "./contract/http/CanonicalErrorPipeline.test";
 
+// --- Contract (Phase 18/15: deterministic middleware ordering) ---
+import "./contract/http/MiddlewareOrdering.test";
+
 // --- Contract (API-L1 Phase 11/12: storefront auth + catalogue adapters) ---
 import "./contract/auth/AuthRouter.test";
 import "./contract/catalog/CatalogRouter.test";
@@ -89,6 +95,16 @@ import "./contract/spec/SpecIntegrity.test";
 
 // --- Contract (API-L1 Part 4: logistics swap boundary HTTP contract) ---
 import "./contract/logistics/SwapRouter.test";
+
+// --- Contract (F3: carts, customers, orders, admin, courier-tracking routers) ---
+import "./contract/f3/F3Routers.test";
+import "./contract/f3/F3EndpointMatrix.test";
+
+// --- Contract (F3.5 audit: order projection never leaks provider-only fields) ---
+import "./contract/f3/OrderFulfillmentProjection.test";
+
+// --- Contract (F3.5: focused read endpoints — happy/not-found/unauthorized/ownership) ---
+import "./contract/f3/F3ReadEndpoints.test";
 
 // --- Unit (L8 notifications: contracts, money, templates, provider adapter) ---
 import "./unit/notifications/NotificationContracts.test";

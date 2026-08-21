@@ -14,8 +14,10 @@ import { SubmitProductReviewUseCase } from "@api/use-cases/catalog/SubmitProduct
 import type { UseCaseDependencies, UseCaseReportBuilder } from "./types";
 
 export interface CatalogUseCases {
-  browseCatalog: BrowseCatalogUseCase;
-  getProductDetails: GetProductDetailsUseCase;
+  /** Present only when the regional pricing service is wired. */
+  browseCatalog?: BrowseCatalogUseCase;
+  /** Present only when the regional pricing service is wired. */
+  getProductDetails?: GetProductDetailsUseCase;
   getVariantAvailability?: GetVariantAvailabilityUseCase;
   resolveCrossSellingProducts?: ResolveCrossSellingProductsUseCase;
   retrieveCategoryTree: RetrieveCategoryTreeUseCase;
@@ -29,18 +31,6 @@ export function buildCatalogUseCases(
 ): CatalogUseCases {
   const { auditLogService, idGenerator, logger, transactionManager } = deps;
 
-  const browseCatalog = new BrowseCatalogUseCase(
-    deps.productReadRepository,
-    auditLogService,
-    idGenerator,
-    logger,
-  );
-  const getProductDetails = new GetProductDetailsUseCase(
-    deps.productReadRepository,
-    auditLogService,
-    idGenerator,
-    logger,
-  );
   const retrieveCategoryTree = new RetrieveCategoryTreeUseCase(
     deps.categoryReadRepository,
     auditLogService,
@@ -57,6 +47,38 @@ export function buildCatalogUseCases(
   );
 
   const pricingService = deps.externalServices?.pricingService;
+
+  // Browse and product details resolve the AUTHORITATIVE regional price per
+  // variant (via the pricing service), so they are wired ONLY when pricing is
+  // present. In the API runtime the DB-backed RegionalPricingService is always
+  // constructed; in the worker runtime these synchronous storefront flows are
+  // deferred by design.
+  let browseCatalog: BrowseCatalogUseCase | undefined;
+  if (pricingService) {
+    browseCatalog = new BrowseCatalogUseCase(
+      deps.productReadRepository,
+      auditLogService,
+      idGenerator,
+      logger,
+      pricingService,
+    );
+  } else {
+    report.unwiredUseCase("BrowseCatalogUseCase", "IPricingService");
+  }
+
+  let getProductDetails: GetProductDetailsUseCase | undefined;
+  if (pricingService) {
+    getProductDetails = new GetProductDetailsUseCase(
+      deps.productReadRepository,
+      auditLogService,
+      idGenerator,
+      logger,
+      pricingService,
+    );
+  } else {
+    report.unwiredUseCase("GetProductDetailsUseCase", "IPricingService");
+  }
+
   let getVariantAvailability: GetVariantAvailabilityUseCase | undefined;
   if (pricingService) {
     getVariantAvailability = new GetVariantAvailabilityUseCase(
@@ -100,11 +122,15 @@ export function buildCatalogUseCases(
   }
 
   report.wiredUseCases(
-    "BrowseCatalogUseCase",
-    "GetProductDetailsUseCase",
     "RetrieveCategoryTreeUseCase",
     "SubmitProductReviewUseCase",
   );
+  if (browseCatalog) {
+    report.wiredUseCases("BrowseCatalogUseCase");
+  }
+  if (getProductDetails) {
+    report.wiredUseCases("GetProductDetailsUseCase");
+  }
 
   return {
     browseCatalog,

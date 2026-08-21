@@ -162,3 +162,107 @@ describe("OpenAPI spec integrity — no stale retired contract", () => {
     }
   });
 });
+
+describe("OpenAPI spec integrity — F4 product projection (categoryIds + media)", () => {
+  const schemas = (doc.components as ComponentBuckets).schemas;
+  const product = schemas.Product as
+    | { required?: string[]; properties?: Record<string, unknown> }
+    | undefined;
+
+  it("Product schema declares categoryIds and media properties", () => {
+    expect(typeof product === "object" && product !== null).toBe(true);
+    // Follows the existing Product convention (only id/title/handle required,
+    // like `variants`): the fields are always emitted but schema-optional so
+    // consumers with partial catalogs still typecheck.
+    const props = product?.properties ?? {};
+    expect("categoryIds" in props).toBe(true);
+    expect("media" in props).toBe(true);
+  });
+
+  it("ProductMedia schema exposes only public-safe fields", () => {
+    const media = schemas.ProductMedia as
+      | { required?: string[]; properties?: Record<string, unknown> }
+      | undefined;
+    expect(typeof media === "object" && media !== null).toBe(true);
+    const required = media?.required ?? [];
+    for (const key of ["id", "url", "kind", "altText", "sortOrder"]) {
+      expect(required.includes(key)).toBe(true);
+    }
+    const props = media?.properties ?? {};
+    for (const key of ["id", "url", "kind", "altText", "sortOrder"]) {
+      expect(key in props).toBe(true);
+    }
+    // No private/underscore keys, no binary payload fields.
+    for (const leaked of ["_url", "productId", "bytes", "mimeType"]) {
+      expect(leaked in props).toBe(false);
+    }
+  });
+
+  it("the media items $ref resolves to ProductMedia", () => {
+    const mediaProp = product?.properties?.["media"] as
+      | { items?: { $ref?: string } }
+      | undefined;
+    expect(mediaProp?.items?.$ref).toBe("#/components/schemas/ProductMedia");
+  });
+});
+
+describe("OpenAPI spec integrity — StandardError.code mirrors the ErrorCode union", () => {
+  const domainErrorPath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../src/domain/entities/errors/DomainError.ts",
+  );
+
+  function readErrorCodeUnion(): string[] {
+    const source = readFileSync(domainErrorPath, "utf8");
+    const start = source.indexOf("export type ErrorCode =");
+    const end = source.indexOf(";", start);
+    const block = source.slice(start, end);
+    const codes = [...block.matchAll(/^\s*\|\s*"([A-Z0-9_]+)"/gm)].map(
+      (m) => m[1],
+    );
+    return codes;
+  }
+
+  function readSpecErrorCodes(): string[] {
+    const schemas = (doc.components as ComponentBuckets).schemas;
+    const standardError = schemas.StandardError as
+      | {
+          properties?: {
+            error?: {
+              properties?: { code?: { enum?: string[] } };
+            };
+          };
+        }
+      | undefined;
+    return standardError?.properties?.error?.properties?.code?.enum ?? [];
+  }
+
+  it("has no duplicate enum values", () => {
+    const codes = readSpecErrorCodes();
+    expect(codes.length).toBeGreaterThan(0);
+    const dupes = codes.filter((code, index) => codes.indexOf(code) !== index);
+    expect(dupes).toEqual([]);
+  });
+
+  it("covers every ErrorCode in the DomainError union (and nothing more)", () => {
+    const domainCodes = readErrorCodeUnion();
+    const specCodes = readSpecErrorCodes();
+    expect(domainCodes.length).toBeGreaterThan(0);
+    expect(new Set(domainCodes)).toEqual(new Set(specCodes));
+  });
+
+  it("recently-added logistics/inventory codes are present", () => {
+    const specCodes = new Set(readSpecErrorCodes());
+    for (const code of [
+      "LOGISTICS_VERIFICATION_FAILED",
+      "LOGISTICS_EVENT_FULFILLMENT_NOT_FOUND",
+      "REFUND_REQUIRES_REVIEW",
+      "SHIPMENT_REQUIRES_RECONCILIATION",
+      "INSUFFICIENT_INVENTORY",
+      "INSUFFICIENT_SINGLE_LOCATION_STOCK",
+      "SOURCING_FAILED",
+    ]) {
+      expect(specCodes.has(code)).toBe(true);
+    }
+  });
+});

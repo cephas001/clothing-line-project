@@ -23,6 +23,7 @@ import { expect } from "../../harness/expect";
 import { Cart } from "@api/domain/entities/Cart";
 import { MoneyAmount } from "@api/domain/entities/MoneyAmount";
 import { Product } from "@api/domain/entities/Product";
+import { ProductMedia } from "@api/domain/entities/ProductMedia";
 import { ProductVariant } from "@api/domain/entities/ProductVariant";
 import { Region } from "@api/domain/entities/Region";
 import type { IProductReadRepository } from "@api/domain/interfaces/repositories/IProductReadRepository";
@@ -75,6 +76,15 @@ function makeProduct(id: string, channel: string): Product {
     variants: [variant],
     categoryIds: [`cat-${id}`],
     salesChannelIds: [channel],
+    media: [
+      new ProductMedia({
+        id: `m-${id}-1`,
+        url: `/products/${id}-1.jpg`,
+        kind: "image",
+        altText: `Product ${id} shot`,
+        sortOrder: 0,
+      }),
+    ],
   });
 }
 
@@ -151,7 +161,7 @@ class FakeRedis
       this.failNextGet = false;
       throw new Error("connect ECONNREFUSED fake redis");
     }
-    if (this.failCacheGet && key.startsWith("product-read:v1:")) {
+    if (this.failCacheGet && key.startsWith("product-read:v2:")) {
       this.failCacheGet = false;
       throw new Error("timeout fake redis get");
     }
@@ -244,7 +254,7 @@ describe("CachedProductReadRepository — cache-aside read-through", () => {
     expect(redis.setCalls).toHaveLength(1);
     expect(redis.setCalls[0].mode).toBe("EX");
     expect(redis.setCalls[0].ttl).toBe(60);
-    expect(redis.setCalls[0].key.startsWith("product-read:v1:")).toBe(true);
+    expect(redis.setCalls[0].key.startsWith("product-read:v2:")).toBe(true);
   });
 
   it("honors a custom ttlSeconds", async () => {
@@ -303,6 +313,11 @@ describe("CachedProductReadRepository — cache-aside read-through", () => {
     expect(cached!.description).toBe("Desc p1");
     expect(cached!.categoryIds).toEqual(["cat-p1"]);
     expect(cached!.salesChannelIds).toEqual(["channel-1"]);
+    expect(cached!.media).toHaveLength(1);
+    expect(cached!.media[0].id).toBe("m-p1-1");
+    expect(cached!.media[0].url).toBe("/products/p1-1.jpg");
+    expect(cached!.media[0].altText).toBe("Product p1 shot");
+    expect(cached!.media[0].sortOrder).toBe(0);
     expect(cached!.variants).toHaveLength(1);
     expect(cached!.variants[0].sku).toBe("SKU-p1");
     expect(cached!.variants[0].inventoryQuantity).toBe(5);
@@ -503,8 +518,8 @@ describe("productReadCacheKeys — deterministic, context-isolated, generation-a
     const g1 = findManyCacheKey({ regionId: "r1" }, "1");
     expect(g0.key).not.toBe(g1.key);
     expect(g0.hash).not.toBe(g1.hash);
-    expect(g0.key.startsWith("product-read:v1:0:")).toBe(true);
-    expect(g1.key.startsWith("product-read:v1:1:")).toBe(true);
+    expect(g0.key.startsWith("product-read:v2:0:")).toBe(true);
+    expect(g1.key.startsWith("product-read:v2:1:")).toBe(true);
   });
 });
 
@@ -548,7 +563,7 @@ describe("CachedProductReadRepository — generation-bump invalidation", () => {
     const decorator = buildDecorator(source, redis);
 
     await decorator.findMany({ regionId: "region-1" });
-    expect(redis.setCalls[0].key.startsWith("product-read:v1:0:")).toBe(true);
+    expect(redis.setCalls[0].key.startsWith("product-read:v2:0:")).toBe(true);
   });
 });
 

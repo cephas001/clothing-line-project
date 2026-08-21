@@ -6,10 +6,15 @@ import { DomainError } from "@api/domain/entities/errors/DomainError";
 import { IAuditLogService } from "@api/domain/interfaces/services/IAuditLogService";
 import { IIdGenerator } from "@api/domain/interfaces/shared/IIdGenerator";
 import { ILogger } from "@api/domain/interfaces/shared/ILogger";
+import { IPricingService } from "@api/domain/interfaces/services/IPricingService";
 import {
   RepositoryError,
   RepositoryErrorCode,
 } from "@api/domain/interfaces/shared/errors/RepositoryError";
+import {
+  ProductWithRegionalPricing,
+  resolveProductRegionalPricing,
+} from "./ProductWithPricing";
 
 /**
  * Use case: retrieve a paginated list of products visible to a specific sales channel and region.
@@ -19,8 +24,10 @@ import {
  * - Normalize and enforce pagination bounds (limit, offset).
  * - Support optional filters: categoryId and searchQuery.
  * - Delegate read-heavy queries to the product read repository which enforces visibility rules.
- * - Return items and total count for client-side pagination.
- * - Map repository/read-adapter errors to DomainError with clear domain codes.
+ * - Resolve each returned variant's AUTHORITATIVE regional price via the pricing
+ *   service (fresh from Postgres; never the product read cache).
+ * - Return items (each with its priceByVariant map) and total count for client-side pagination.
+ * - Map repository/read-adapter/pricing errors to DomainError with clear domain codes.
  * - Emit a non-blocking audit log entry for observability.
  */
 export interface BrowseCatalogInput {
@@ -43,11 +50,12 @@ export class BrowseCatalogUseCase {
     private readonly auditLogService: IAuditLogService,
     private readonly idGenerator: IIdGenerator,
     private readonly logger: ILogger,
+    private readonly pricingService: IPricingService,
   ) {}
 
   async execute(
     input: BrowseCatalogInput,
-  ): Promise<{ items: Product[]; total: number }> {
+  ): Promise<{ items: ProductWithRegionalPricing[]; total: number }> {
     // --- Normalize and validate inputs
     const salesChannelId = (input.salesChannelId ?? "").trim();
     const regionId = (input.regionId ?? "").trim();
@@ -140,6 +148,21 @@ export class BrowseCatalogUseCase {
       throw new DomainError("INTERNAL_ERROR", "Failed to browse catalog.");
     }
 
+    // --- Resolve the authoritative regional price per variant (fresh from
+    // Postgres via the pricing service; never from the product read cache).
+    // A pricing failure fails the whole read (fail-closed: prices are never
+    // served partially or guessed).
+    const items = await Promise.all(
+      result.items.map((product) =>
+        resolveProductRegionalPricing(
+          product,
+          regionId,
+          this.pricingService,
+          this.logger,
+        ),
+      ),
+    );
+
     // --- Audit log (non-blocking)
     try {
       await this.auditLogService.logAction(
@@ -153,7 +176,7 @@ export class BrowseCatalogUseCase {
           searchQuery: searchQuery ?? "",
           limit: String(limit),
           offset: String(offset),
-          returnedCount: String(result.items.length),
+          returnedCount: String(items.length),
         },
       );
     } catch (auditErr: any) {
@@ -169,9 +192,9 @@ export class BrowseCatalogUseCase {
       regionId,
       limit,
       offset,
-      returnedCount: result.items.length,
+      returnedCount: items.length,
     });
 
-    return result;
+    return { items, total: result.total };
   }
 }

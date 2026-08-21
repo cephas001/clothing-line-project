@@ -14,6 +14,7 @@ import { ConfirmOrderEditUseCase } from "@api/use-cases/logistics/ConfirmOrderEd
 import { DispatchOrderFulfillmentUseCase } from "@api/use-cases/logistics/DispatchOrderFulfillmentUseCase";
 import { FinalizeSwapTransactionUseCase } from "@api/use-cases/logistics/FinalizeSwapTransactionUseCase";
 import { GenerateDraftOrderUseCase } from "@api/use-cases/logistics/GenerateDraftOrderUseCase";
+import { GetOrderUseCase } from "@api/use-cases/logistics/GetOrderUseCase";
 import { InitiateReturnAuthorizationUseCase } from "@api/use-cases/logistics/InitiateReturnAuthorizationUseCase";
 import { ProcessCourierTrackingEventUseCase } from "@api/use-cases/logistics/ProcessCourierTrackingEventUseCase";
 import { ProcessOrderSwapVarianceUseCase } from "@api/use-cases/logistics/ProcessOrderSwapVarianceUseCase";
@@ -30,6 +31,7 @@ export interface LogisticsUseCases {
   dispatchOrderFulfillment?: DispatchOrderFulfillmentUseCase;
   finalizeSwapTransaction: FinalizeSwapTransactionUseCase;
   generateDraftOrder: GenerateDraftOrderUseCase;
+  getOrder: GetOrderUseCase;
   initiateReturnAuthorization?: InitiateReturnAuthorizationUseCase;
   processCourierTrackingEvent: ProcessCourierTrackingEventUseCase;
   processOrderSwapVariance?: ProcessOrderSwapVarianceUseCase;
@@ -52,6 +54,12 @@ export function buildLogisticsUseCases(
     idGenerator,
     logger,
     transactionManager,
+  );
+  const getOrder = new GetOrderUseCase(
+    deps.orderRepository,
+    auditLogService,
+    idGenerator,
+    logger,
   );
   const proposeOrderEdit = new ProposeOrderEditUseCase(
     deps.orderRepository,
@@ -226,6 +234,7 @@ export function buildLogisticsUseCases(
 
   report.wiredUseCases(
     "ConfirmOrderEditUseCase",
+    "GetOrderUseCase",
     "ProposeOrderEditUseCase",
     "VerifySwapPaymentEventUseCase",
     "FinalizeSwapTransactionUseCase",
@@ -240,6 +249,7 @@ export function buildLogisticsUseCases(
     dispatchOrderFulfillment,
     finalizeSwapTransaction,
     generateDraftOrder,
+    getOrder,
     initiateReturnAuthorization,
     processCourierTrackingEvent,
     processOrderSwapVariance,

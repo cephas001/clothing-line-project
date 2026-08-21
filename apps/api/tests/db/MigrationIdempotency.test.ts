@@ -19,7 +19,7 @@ describe("Real Postgres — migration applicability and idempotency (item 29)", 
   it("fresh database migrated to latest in setup — ledger lists every migration executed", async () => {
     const h = getDbHarness();
     const ledger = await listMigrationLedger(h);
-    expect(ledger.length).toBe(18);
+    expect(ledger.length).toBe(20);
     for (const migration of ledger) {
       expect(migration.executed).toBe(true);
     }
@@ -53,6 +53,7 @@ describe("Real Postgres — migration applicability and idempotency (item 29)", 
       "inventory_location",
       "inventory_level",
       "inventory_reservation",
+      "product_media",
     ]) {
       expect(names.includes(expected)).toBe(true);
     }

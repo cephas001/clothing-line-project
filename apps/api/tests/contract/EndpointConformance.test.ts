@@ -20,6 +20,46 @@
 //   app.use("/store/carts",              checkoutShippingRouter)      POST /:id/shipping-quotes
 //                                                                     POST /:id/shipping-options
 //   app.use("/store/orders",             swapRouter)                  POST /:orderId/swaps
+//   app.use("/store/webhooks/courier-tracking", courierTrackingWebhookRouter) POST /
+//   app.use("/store",                    customersRouter)            POST /customers
+//                                                                     GET  /customers/me
+//                                                                     GET  /customers/me/addresses
+//                                                                     POST /customers/password-reset/initiate
+//                                                                     POST /customers/password-reset/complete
+//                                                                     POST /customers/me/addresses
+//                                                                     PUT/DELETE /customers/me/addresses/:address_id
+//                                                                     POST /customers/me/business-units
+//                                                                     POST /customers/me/quotes
+//                                                                     POST /quotes/:id/approve
+//                                                                     GET  /customers/me/orders
+//                                                                     POST /customers/me/erasure
+//   app.use("/store",                    ordersRouter)               GET  /orders/:orderId
+//                                                                     POST /orders/:orderId/returns
+//                                                                     POST /orders/:orderId/edits
+//                                                                     POST /order-edits/:orderEditId/confirm
+//                                                                     POST /orders/:orderId/fulfillments
+//   app.use("/store/carts",              cartRouter)                 GET  /:id
+//                                                                     POST /
+//                                                                     POST /:id/line-items
+//                                                                     POST /:id/line-items/custom
+//                                                                     PUT /:id/line-items/:line_id
+//                                                                     DELETE /:id/line-items/:line_id
+//                                                                     POST /:id/discount
+//                                                                     POST /:id/merge
+//                                                                     PUT /:id/shipping-address
+//   app.use("/admin",                    adminRouter)                POST /products
+//                                                                     POST /products/:id/variants
+//                                                                     POST /variants/:id/regional-prices
+//                                                                     POST /promotions
+//                                                                     POST /sales-channels
+//                                                                     POST /categories
+//                                                                     PUT /roles/:id/permissions
+//                                                                     POST /imports/bulk-catalog
+//                                                                     GET  /queues/:queue_name/dead-letter
+//                                                                     POST /queues/:queue_name/dead-letter/:job_id/retry
+//                                                                     POST /draft-orders
+//                                                                     POST /sourcing-location
+//                                                                     POST /carts/prune
 //
 // A path+method present in the spec but NOT mounted (or mounted but not in
 // the spec) is a contract drift this suite fails on, so the verification
@@ -77,6 +117,51 @@ const MOUNTED_ENDPOINTS: MountedEndpoint[] = [
   { path: "/store/carts/{id}/shipping-quotes", method: "post" },
   { path: "/store/carts/{id}/shipping-options", method: "post" },
   { path: "/store/webhooks/shipbubble", method: "post" },
+  // Carts (F3)
+  { path: "/store/carts", method: "post" },
+  { path: "/store/carts/{id}", method: "get" },
+  { path: "/store/carts/{id}/line-items", method: "post" },
+  { path: "/store/carts/{id}/line-items/custom", method: "post" },
+  { path: "/store/carts/{id}/line-items/{line_id}", method: "put" },
+  { path: "/store/carts/{id}/line-items/{line_id}", method: "delete" },
+  { path: "/store/carts/{id}/discount", method: "post" },
+  { path: "/store/carts/{id}/merge", method: "post" },
+  { path: "/store/carts/{id}/shipping-address", method: "put" },
+  // Customers (F3)
+  { path: "/store/customers", method: "post" },
+  { path: "/store/customers/me", method: "get" },
+  { path: "/store/customers/me/addresses", method: "get" },
+  { path: "/store/customers/password-reset/initiate", method: "post" },
+  { path: "/store/customers/password-reset/complete", method: "post" },
+  { path: "/store/customers/me/addresses", method: "post" },
+  { path: "/store/customers/me/addresses/{address_id}", method: "put" },
+  { path: "/store/customers/me/addresses/{address_id}", method: "delete" },
+  { path: "/store/customers/me/business-units", method: "post" },
+  { path: "/store/customers/me/quotes", method: "post" },
+  { path: "/store/quotes/{id}/approve", method: "post" },
+  { path: "/store/customers/me/orders", method: "get" },
+  { path: "/store/customers/me/erasure", method: "post" },
+  // Orders / logistics (F3)
+  { path: "/store/orders/{id}", method: "get" },
+  { path: "/store/orders/{id}/returns", method: "post" },
+  { path: "/store/orders/{id}/edits", method: "post" },
+  { path: "/store/order-edits/{id}/confirm", method: "post" },
+  { path: "/store/orders/{id}/fulfillments", method: "post" },
+  { path: "/store/webhooks/courier-tracking", method: "post" },
+  // Admin (F3)
+  { path: "/admin/products", method: "post" },
+  { path: "/admin/products/{id}/variants", method: "post" },
+  { path: "/admin/variants/{id}/regional-prices", method: "post" },
+  { path: "/admin/promotions", method: "post" },
+  { path: "/admin/sales-channels", method: "post" },
+  { path: "/admin/categories", method: "post" },
+  { path: "/admin/roles/{id}/permissions", method: "put" },
+  { path: "/admin/imports/bulk-catalog", method: "post" },
+  { path: "/admin/queues/{queue_name}/dead-letter", method: "get" },
+  { path: "/admin/queues/{queue_name}/dead-letter/{job_id}/retry", method: "post" },
+  { path: "/admin/draft-orders", method: "post" },
+  { path: "/admin/sourcing-location", method: "post" },
+  { path: "/admin/carts/prune", method: "post" },
 ];
 
 describe("OpenAPI conformance — mounted endpoints exist in the spec", () => {
@@ -87,6 +172,63 @@ describe("OpenAPI conformance — mounted endpoints exist in the spec", () => {
       expect(pathItem !== undefined).toBe(true);
       const operations = pathItem as Record<string, unknown>;
       expect(typeof operations[endpoint.method] === "object").toBe(true);
+    }
+  });
+
+  it("declares EVERY operation in the spec — mounted OR an explicit documented gap", () => {
+    // Reverse direction of the mount->spec check: every path+method the spec
+    // declares must be EITHER mounted by the composition root (in
+    // MOUNTED_ENDPOINTS) OR listed here as an intentionally-unmounted
+    // operation. An operation that is neither mounted nor documented as a gap
+    // is contract drift the verification suite must fail on, so the spec and
+    // the server can never silently disagree about what the API promises.
+    //
+    // The gap list mirrors the reconciliation matrix §3/§4: the C-blocked
+    // (missing infrastructure) operations have NO router or an explicitly
+    // unregistered route, and the catalog search/related/availability operations
+    // are registered only when their capability is wired. Each entry names the
+    // reason so the failure message stays actionable.
+    const UNMOUNTED_BY_DESIGN: Array<{ path: string; method: string }> = [
+      // C — blocked on missing infrastructure (no adapter in the repository).
+      { path: "/store/carts/{id}/insurance-quote", method: "post" },
+      { path: "/admin/variants/{id}/inventory", method: "post" },
+      { path: "/admin/maintenance/stale-transactions", method: "post" },
+    ];
+
+    const mountedSet = new Set(
+      MOUNTED_ENDPOINTS.map((endpoint) => `${endpoint.method} ${endpoint.path}`),
+    );
+    const gapSet = new Set(
+      UNMOUNTED_BY_DESIGN.map((endpoint) => `${endpoint.method} ${endpoint.path}`),
+    );
+
+    expect(doc.paths !== undefined && typeof doc.paths === "object").toBe(true);
+    const declared: Array<{ path: string; method: string }> = [];
+    for (const [path, pathItem] of Object.entries(
+      doc.paths as Record<string, Record<string, unknown>>,
+    )) {
+      for (const method of Object.keys(pathItem)) {
+        if (["parameters", "summary", "description"].includes(method)) {
+          continue;
+        }
+        declared.push({ path, method });
+      }
+    }
+
+    // Every declared operation is accounted for: mounted, or a documented gap.
+    for (const endpoint of declared) {
+      const key = `${endpoint.method} ${endpoint.path}`;
+      const ok = mountedSet.has(key) || gapSet.has(key);
+      expect(ok).toBe(true);
+    }
+
+    // Every gap is genuinely declared by the spec (no stale gap entries).
+    for (const gap of UNMOUNTED_BY_DESIGN) {
+      const pathItem = doc.paths?.[gap.path] as
+        | Record<string, unknown>
+        | undefined;
+      expect(pathItem !== undefined).toBe(true);
+      expect(typeof pathItem?.[gap.method] === "object").toBe(true);
     }
   });
 

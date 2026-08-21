@@ -4,6 +4,7 @@
 import "./infrastructure/observability/instrumentation";
 
 import express from "express";
+import cors from "cors";
 import swaggerUi from "swagger-ui-express";
 import fs from "fs";
 import YAML from "yaml";
@@ -28,6 +29,30 @@ async function main(): Promise<void> {
 
   const app = express();
   const port = runtime.config.port;
+
+  // CORS — registered BEFORE every router (including the raw-body webhooks)
+  // so preflight OPTIONS requests resolve here and never fall through to a
+  // JSON 404. The allowed origin is the configured FRONTEND_URL; when it is
+  // absent, any origin is reflected (development posture) with a boot
+  // warning. Server-to-server callers (payment/logistics webhooks) send no
+  // Origin header and are unaffected either way. The storefront authenticates
+  // with bearer tokens (Authorization header), not cookies, so credentials
+  // stay disabled; the cors middleware reflects the requested headers on
+  // preflights, which covers Authorization + Content-Type.
+  const frontendOrigin = runtime.config.frontendUrl;
+  app.use(
+    cors({
+      origin: frontendOrigin ?? true,
+      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    }),
+  );
+  if (frontendOrigin) {
+    logger.info("CORS policy applied", { origin: frontendOrigin });
+  } else {
+    logger.warn(
+      "FRONTEND_URL is not set — CORS allows any origin (development posture)",
+    );
+  }
 
   registerRoutes(app, runtime);
 
@@ -104,6 +129,12 @@ function registerRoutes(
     runtime.logisticsWebhookRouter,
     logger,
   );
+  mountIfPresent(
+    app,
+    "/store/webhooks/courier-tracking",
+    runtime.courierTrackingWebhookRouter,
+    logger,
+  );
 
   // 5. Global JSON parser for all JSON request bodies.
   app.use(express.json({ limit: "100kb" }));
@@ -111,9 +142,13 @@ function registerRoutes(
   // 6. Storefront JSON routers (the existing /store versioning convention).
   mountIfPresent(app, "/store", runtime.authRouter, logger);
   mountIfPresent(app, "/store", runtime.catalogRouter, logger);
+  mountIfPresent(app, "/store", runtime.customersRouter, logger);
+  mountIfPresent(app, "/store", runtime.ordersRouter, logger);
   mountIfPresent(app, "/store/carts", runtime.paymentInitializationRouter, logger);
   mountIfPresent(app, "/store/carts", runtime.checkoutShippingRouter, logger);
+  mountIfPresent(app, "/store/carts", runtime.cartRouter, logger);
   mountIfPresent(app, "/store/orders", runtime.swapRouter, logger);
+  mountIfPresent(app, "/admin", runtime.adminRouter, logger);
 
   // 7. Terminal handlers: unmatched routes -> JSON 404; any remaining error ->
   //    canonical envelope. MUST be last.

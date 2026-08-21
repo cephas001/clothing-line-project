@@ -232,7 +232,9 @@ export interface paths {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["SubmitReviewResponse"];
+                    };
                 };
                 400: components["responses"]["StandardErrorResponse"];
                 403: components["responses"]["StandardErrorResponse"];
@@ -2014,11 +2016,31 @@ export interface paths {
          * @description Accepts tracking events, updates the matching fulfilment, and optionally notifies the
          *     customer. Unknown tracking numbers are ignored idempotently; out-of-order events are
          *     dropped.
+         *
+         *     SIGNATURE SECRET MECHANISM: the request body is consumed as RAW BYTES and verified
+         *     against the HMAC-SHA512 signature in the `x-courier-signature` header (computed over
+         *     those exact bytes with the dedicated `COURIER_TRACKING_WEBHOOK_SECRET` — never any API
+         *     key) BEFORE any JSON parsing. A missing or mismatched signature returns `401` and the
+         *     event is discarded (fail closed); the raw body is never parsed without a verified
+         *     signature.
+         *
+         *     After verification the payload is validated and mapped to a provider-neutral logistics
+         *     event, then enqueued for background processing. This request NEVER updates fulfillment,
+         *     NEVER creates shipments, NEVER calls the courier, and holds NO database transaction. A
+         *     `204` acknowledges receipt (and stops the courier retrying); a `401` (invalid signature)
+         *     or `500` (processing outage) causes the courier to retry; a `400` (malformed payload) is
+         *     permanent and should not be retried.
          */
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    /**
+                     * @description HMAC-SHA512 (hex) signature of the raw request body, computed by the courier with
+                     *     the dedicated webhook secret. Must be verified against the exact raw bytes.
+                     */
+                    "x-courier-signature": string;
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -2036,6 +2058,7 @@ export interface paths {
                     content?: never;
                 };
                 400: components["responses"]["StandardErrorResponse"];
+                401: components["responses"]["StandardErrorResponse"];
                 500: components["responses"]["StandardErrorResponse"];
             };
         };
@@ -2843,7 +2866,7 @@ export interface components {
                  * @example OUT_OF_STOCK
                  * @enum {string}
                  */
-                code: "VALIDATION_ERROR" | "CART_NOT_FOUND" | "REGION_NOT_FOUND" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "INVALID_SIGNATURE" | "REGION_NOT_FOUND" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND";
+                code: "VALIDATION_ERROR" | "INVALID_EMAIL" | "NEGATIVE_AMOUNT" | "INVALID_CURRENCY" | "INVALID_OPERATION" | "INVALID_STATE" | "INVALID_STATUS_TRANSITION" | "OUT_OF_STOCK" | "REGIONAL_PRICE_MISSING" | "INTERNAL_ERROR" | "JOB_PROCESSING_ERROR" | "PAYMENT_VERIFICATION_FAILED" | "LOGISTICS_VERIFICATION_FAILED" | "LOGISTICS_EVENT_FULFILLMENT_NOT_FOUND" | "EXTERNAL_SERVICE_TIMEOUT" | "EXTERNAL_SERVICE_UNAVAILABLE" | "EXTERNAL_SERVICE_ERROR" | "LOCK_ACQUISITION_FAILED" | "UNSUPPORTED_OPERATION" | "ORDER_ALREADY_FULFILLED" | "INVALID_RETURN_QUANTITY" | "DUPLICATE_DRAFT_ORDER" | "PAYMENT_REQUIRED" | "INVALID_RETURN_ITEM" | "INVALID_INPUT" | "REGION_NOT_FOUND" | "DUPLICATE_TRANSACTION" | "TRANSACTION_NOT_FOUND" | "INVALID_PAYMENT_AMOUNT" | "PERMISSION_DENIED" | "DUPLICATE_QUOTE" | "UNAUTHORIZED" | "UNAUTHORIZED_REVIEW" | "INVALID_CREDENTIALS" | "UNAUTHORIZED_ACCESS" | "CUSTOMER_ALREADY_EXISTS" | "COMPLIANCE_VIOLATION" | "ACCOUNT_DISABLED" | "ACCOUNT_LOCKED" | "BUSINESS_UNIT_ALREADY_EXISTS" | "PAYMENT_DECLINED" | "REFUND_REQUIRES_REVIEW" | "SHIPMENT_REQUIRES_RECONCILIATION" | "INVALID_SIGNATURE" | "RESOURCE_NOT_FOUND" | "CART_NOT_FOUND" | "PRODUCT_NOT_FOUND" | "INSUFFICIENT_INVENTORY" | "INSUFFICIENT_SINGLE_LOCATION_STOCK" | "SOURCING_FAILED";
                 /** @example Requested quantity exceeds available inventory. */
                 message: string;
                 details?: {
@@ -2858,9 +2881,25 @@ export interface components {
             title: string;
             handle: string;
             description?: string | null;
+            /** @description Category membership ids (storefront navigation/filtering). Always emitted (empty array when none). */
+            categoryIds?: string[];
+            /** @description Product media references (images) in deterministic display order (lowest sortOrder first). URLs are public-fetchable locations; the backend never serves binaries from the catalog. Always emitted (empty array when none). */
+            media?: components["schemas"]["ProductMedia"][];
             variants?: components["schemas"]["ProductVariant"][];
         };
-        /** @description Product variant DTO with inventory and backorder flag. */
+        /** @description Product media reference (never the binary itself). */
+        ProductMedia: {
+            /** Format: uuid */
+            id: string;
+            /** @description Public-fetchable media location (relative asset path or CDN URL). */
+            url: string;
+            /** @description Media classification (defaults to "image"). */
+            kind: string;
+            altText: string | null;
+            /** @description Deterministic display order (lower first). */
+            sortOrder: number;
+        };
+        /** @description Product variant DTO with inventory, backorder flag, and the authoritative regional price. */
         ProductVariant: {
             /** Format: uuid */
             id: string;
@@ -2872,6 +2911,8 @@ export interface components {
             allowBackorder: boolean;
             /** @description Optimistic-lock version, incremented on every inventory change. */
             version: number;
+            /** @description Authoritative regional price for this variant in minor units (cents/kobo of the region's currency), resolved server-side from the pricing service for the request's region_id. Null when no regional price exists for this variant. This is the ONLY price authority — clients must never derive, substitute, or invent a price. */
+            priceMinor: number | null;
         };
         ProductList: {
             items: components["schemas"]["Product"][];
@@ -3397,6 +3438,13 @@ export interface components {
             rating: number;
             comment?: string;
         };
+        SubmitReviewResponse: {
+            /**
+             * @description The review was persisted.
+             * @constant
+             */
+            success: true;
+        };
         AuthenticateRequest: {
             /** Format: email */
             email: string;
@@ -3465,6 +3513,17 @@ export interface components {
             approvedTotalMinor: number;
             approvalNote?: string;
         };
+        /**
+         * @description Return authorization request. The prorated `refundAmountMinor` is computed
+         *     AUTHORITATIVELY server-side from the order's historical pricing — a client
+         *     can never dictate a refund amount.
+         *
+         *     When `requireReturnLabel` is true, the RETURN courier + service rate must
+         *     be supplied in `returnSelection` (the courier the customer returns the item
+         *     with). The refund amount is NEVER derived from `returnSelection.amountMinor`
+         *     — that field is only the return-label courier rate and is never used for any
+         *     charge or refund decision.
+         */
         ReturnRequest: {
             /** Format: uuid */
             orderId: string;
@@ -3479,6 +3538,30 @@ export interface components {
              * @default true
              */
             requireReturnLabel: boolean;
+            /** @description Required when `requireReturnLabel` is true. */
+            returnSelection?: components["schemas"]["ReturnSelection"];
+        };
+        /**
+         * @description The RETURN courier + service rate the customer selected. `courierId` and
+         *     `serviceCode` drive the provider label; `amountMinor` is the return-label
+         *     courier rate ONLY and never affects the refund (the refund is prorated
+         *     server-side from order pricing).
+         */
+        ReturnSelection: {
+            /**
+             * Format: uuid
+             * @description Application return-rates quote id when applicable.
+             */
+            quoteId?: string;
+            /** @description Provider courier identity for the return label. */
+            courierId: string;
+            /** @description Provider service code for the return label. */
+            serviceCode: string;
+            serviceLevel?: string;
+            /** @description Return-label courier rate in minor units (never a refund amount). */
+            amountMinor: number;
+            currency?: string;
+            etaDays?: number;
         };
         SwapRequest: {
             /** Format: uuid */
@@ -3545,10 +3628,8 @@ export interface components {
             /** @enum {string} */
             status: "proposed";
         };
-        DispatchFulfillmentRequest: {
-            preferredCourier?: string;
-            serviceLevel?: string;
-        };
+        /** @description Dispatch is snapshot-authoritative: the courier, service level, destination, parcel items and origin all come EXCLUSIVELY from the FROZEN shipping + sourcing snapshots recorded at checkout/finalization. The request body is therefore EMPTY — no courier, service-level, or financial hints are accepted, and a client can never choose a courier. Any body fields are rejected (VALIDATION_ERROR, 400). */
+        DispatchFulfillmentRequest: Record<string, never>;
         CourierTrackingWebhook: {
             trackingNumber: string;
             /**

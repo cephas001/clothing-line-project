@@ -7,7 +7,18 @@
 // projections.ts (public response DTOs). Consumers that need a single symbol
 // may keep importing the specific file directly.
 
-export { createAuthRouter, type AuthRouterDeps } from "./routers/AuthRouter";
+export {
+  createAuthRouter,
+  type AuthRouterDeps,
+} from "./routers/AuthRouter";
+export {
+  createAdminRouter,
+  type AdminRouterDeps,
+} from "./routers/AdminRouter";
+export {
+  createCartRouter,
+  type CartRouterDeps,
+} from "./routers/CartRouter";
 export {
   createCatalogRouter,
   type CatalogRouterDeps,
@@ -16,6 +27,18 @@ export {
   createCheckoutShippingRouter,
   type CheckoutShippingRouterDeps,
 } from "./routers/CheckoutShippingRouter";
+export {
+  createCourierTrackingWebhookRouter,
+  type CourierTrackingWebhookRouterDeps,
+} from "./routers/CourierTrackingWebhookRouter";
+export {
+  createCustomersRouter,
+  type CustomersRouterDeps,
+} from "./routers/CustomersRouter";
+export {
+  createOrdersRouter,
+  type OrdersRouterDeps,
+} from "./routers/OrdersRouter";
 export {
   createPaymentInitializationRouter,
   type PaymentInitializationRouterDeps,
@@ -62,4 +85,20 @@ export {
   toProductVariantResponse,
   type ProductResponse,
   type ProductVariantResponse,
+} from "./projections";
+export {
+  toBusinessUnitResponse,
+  toCartResponse,
+  toCategoryResponse,
+  toCustomerResponse,
+  toDeadLetterJobResponse,
+  toOrderResponse,
+  toSalesChannelResponse,
+  type BusinessUnitResponse,
+  type CartResponse,
+  type CategoryResponse,
+  type CustomerResponse,
+  type DeadLetterJobResponse,
+  type OrderResponse,
+  type SalesChannelResponse,
 } from "./projections";

@@ -14,6 +14,7 @@
 
 import { Product } from "@api/domain/entities/Product";
 import { ProductVariant } from "@api/domain/entities/ProductVariant";
+import { ProductMedia } from "@api/domain/entities/ProductMedia";
 import type { ProductReadQuery } from "@api/domain/shared/contracts";
 import type { IProductReadRepository } from "@api-domain-interfaces/repositories/IProductReadRepository";
 import type { Expression, ExpressionBuilder, Kysely } from "kysely";
@@ -37,6 +38,15 @@ type VariantRow = {
   version: number;
 };
 
+type MediaRow = {
+  id: string;
+  product_id: string;
+  url: string;
+  kind: string;
+  alt_text: string | null;
+  sort_order: number;
+};
+
 function toProductDomain(row: ProductRow): Product {
   return new Product({
     id: row.id,
@@ -54,6 +64,16 @@ function toVariantDomain(row: VariantRow): ProductVariant {
     inventoryQuantity: row.inventory_quantity,
     allowBackorder: row.allow_backorder,
     version: row.version,
+  });
+}
+
+function toMediaDomain(row: MediaRow): ProductMedia {
+  return new ProductMedia({
+    id: row.id,
+    url: row.url,
+    kind: row.kind,
+    altText: row.alt_text,
+    sortOrder: row.sort_order,
   });
 }
 
@@ -109,6 +129,31 @@ async function loadMemberships(
     };
     entry.salesChannelIds.push(row.sales_channel_id);
     result.set(row.product_id, entry);
+  }
+  return result;
+}
+
+// Loads media references for a set of products in one batched query, ordered
+// deterministically (sort_order, then id) so projection ordering is stable.
+async function loadMedia(
+  db: Kysely<Database>,
+  productIds: string[],
+): Promise<Map<string, ProductMedia[]>> {
+  const result = new Map<string, ProductMedia[]>();
+  if (productIds.length === 0) {
+    return result;
+  }
+  const mediaRows = await db
+    .selectFrom("product_media")
+    .selectAll()
+    .where("product_id", "in", productIds)
+    .orderBy("sort_order")
+    .orderBy("id")
+    .execute();
+  for (const row of mediaRows) {
+    const list = result.get(row.product_id) ?? [];
+    list.push(toMediaDomain(row));
+    result.set(row.product_id, list);
   }
   return result;
 }
@@ -214,6 +259,10 @@ export class PostgresProductReadRepository implements IProductReadRepository {
         db,
         productRows.map((p) => p.id),
       );
+      const media = await loadMedia(
+        db,
+        productRows.map((p) => p.id),
+      );
 
       const products: Product[] = [];
       for (const productRow of productRows) {
@@ -238,6 +287,7 @@ export class PostgresProductReadRepository implements IProductReadRepository {
         const product = toProductDomain(productRow);
         product.assignCategories(membership.categoryIds);
         product.assignSalesChannels(membership.salesChannelIds);
+        product.assignMedia(media.get(productRow.id) ?? []);
         variantRows.forEach((variantRow) =>
           product.addVariant(toVariantDomain(variantRow)),
         );
@@ -303,6 +353,7 @@ export class PostgresProductReadRepository implements IProductReadRepository {
       };
       product.assignCategories(memberOf.categoryIds);
       product.assignSalesChannels(memberOf.salesChannelIds);
+      product.assignMedia((await loadMedia(db, [product.id])).get(product.id) ?? []);
 
       // Always hydrate variants when asked to expand them or by default for a
       // usable projection; the interface's expand/fields are accepted but not

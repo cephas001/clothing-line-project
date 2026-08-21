@@ -26,8 +26,9 @@ import {
 import { FakeTokenService } from "../../fakes/FakeTokenService";
 import { NoopLogger } from "../../fakes/NoopLogger";
 import { DomainError } from "@api/domain/entities/errors/DomainError";
-import type { Product } from "@api/domain/entities/Product";
-import type { ProductVariant } from "@api/domain/entities/ProductVariant";
+import { Product } from "@api/domain/entities/Product";
+import { ProductVariant } from "@api/domain/entities/ProductVariant";
+import { ProductMedia } from "@api/domain/entities/ProductMedia";
 import type { Category } from "@api/domain/entities/Category";
 
 interface ServerHandle {
@@ -88,22 +89,31 @@ const VALID_CLAIMS = {
   roles: [],
 };
 
-const SAMPLE_VARIANT = {
+const SAMPLE_VARIANT = new ProductVariant({
   id: "variant-1",
   productId: "product-1",
   sku: "TEE-S-M",
   inventoryQuantity: 12,
   allowBackorder: false,
   version: 3,
-} as unknown as ProductVariant;
+});
 
-const SAMPLE_PRODUCT = {
+const SAMPLE_MEDIA = new ProductMedia({
+  id: "media-1",
+  url: "/products/classic-tee-1.jpg",
+  kind: "image",
+  altText: "Classic Tee studio shot",
+  sortOrder: 0,
+});
+
+const SAMPLE_PRODUCT = new Product({
   id: "product-1",
   title: "Classic Tee",
   handle: "classic-tee",
-  description: null,
   variants: [SAMPLE_VARIANT],
-} as unknown as Product;
+  categoryIds: ["cat-1"],
+  media: [SAMPLE_MEDIA],
+});
 
 const SAMPLE_CATEGORY = {
   id: "cat-1",
@@ -152,7 +162,15 @@ function buildHarness(options?: {
         browseCatalog: {
           async execute(input: Record<string, unknown>) {
             calls.browse.push({ ...input });
-            return { items: [SAMPLE_PRODUCT], total: 1 };
+            return {
+              items: [
+                {
+                  product: SAMPLE_PRODUCT,
+                  priceByVariant: new Map([["variant-1", 2500]]),
+                },
+              ],
+              total: 1,
+            };
           },
         } as never,
         getProductDetails: {
@@ -161,7 +179,10 @@ function buildHarness(options?: {
             if (options?.productNotFound) {
               throw new DomainError("PRODUCT_NOT_FOUND", "Product not found.");
             }
-            return SAMPLE_PRODUCT;
+            return {
+              product: SAMPLE_PRODUCT,
+              priceByVariant: new Map([["variant-1", 2500]]),
+            };
           },
         } as never,
         retrieveCategoryTree: {
@@ -360,6 +381,16 @@ describe("catalogue public projections — no internal state leaks", () => {
         title: "Classic Tee",
         handle: "classic-tee",
         description: null,
+        categoryIds: ["cat-1"],
+        media: [
+          {
+            id: "media-1",
+            url: "/products/classic-tee-1.jpg",
+            kind: "image",
+            altText: "Classic Tee studio shot",
+            sortOrder: 0,
+          },
+        ],
         variants: [
           {
             id: "variant-1",
@@ -368,18 +399,19 @@ describe("catalogue public projections — no internal state leaks", () => {
             inventoryQuantity: 12,
             allowBackorder: false,
             version: 3,
+            priceMinor: 2500,
           },
         ],
       });
-      // Never a leaked internal key: underscore-backed entity state, category /
-      // sales-channel membership, inventory or pricing metadata.
+      // Never a leaked internal key: underscore-backed entity state, sales
+      // channel membership, or inventory metadata. categoryIds and media ARE
+      // public contract fields (F4/M1) and are asserted above.
       for (const key of [
         "_title",
         "_handle",
         "_variants",
         "_categoryIds",
         "_salesChannelIds",
-        "categoryIds",
         "salesChannelIds",
       ]) {
         expect(key in product).toBe(false);
@@ -400,7 +432,9 @@ describe("catalogue public projections — no internal state leaks", () => {
       expect(items[0].id).toBe("product-1");
       expect(items[0].title).toBe("Classic Tee");
       expect(items[0].handle).toBe("classic-tee");
-      for (const key of ["_title", "_handle", "_variants", "categoryIds", "salesChannelIds"]) {
+      expect(items[0].categoryIds).toEqual(["cat-1"]);
+      expect((items[0].media as unknown[]).length).toBe(1);
+      for (const key of ["_title", "_handle", "_variants", "salesChannelIds"]) {
         expect(key in items[0]).toBe(false);
       }
     } finally {

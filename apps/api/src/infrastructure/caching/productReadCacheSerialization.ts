@@ -21,6 +21,7 @@
 
 import { Product } from "@api/domain/entities/Product";
 import { ProductVariant } from "@api/domain/entities/ProductVariant";
+import { ProductMedia } from "@api/domain/entities/ProductMedia";
 
 /** Serializable projection of a ProductVariant. */
 export interface SerializedVariant {
@@ -32,6 +33,15 @@ export interface SerializedVariant {
   version: number;
 }
 
+/** Serializable projection of a ProductMedia reference. */
+export interface SerializedMedia {
+  id: string;
+  url: string;
+  kind: string;
+  altText: string | null;
+  sortOrder: number;
+}
+
 /** Serializable projection of a Product (with its hydrated variants). */
 export interface SerializedProduct {
   id: string;
@@ -41,6 +51,7 @@ export interface SerializedProduct {
   variants: SerializedVariant[];
   categoryIds: string[];
   salesChannelIds: string[];
+  media: SerializedMedia[];
 }
 
 export type ProductReadCacheKind = "product-list" | "product-detail";
@@ -68,6 +79,16 @@ function serializeVariant(variant: ProductVariant): SerializedVariant {
   };
 }
 
+function serializeMedia(media: ProductMedia): SerializedMedia {
+  return {
+    id: media.id,
+    url: media.url,
+    kind: media.kind,
+    altText: media.altText,
+    sortOrder: media.sortOrder,
+  };
+}
+
 function serializeProduct(product: Product): SerializedProduct {
   return {
     id: product.id,
@@ -77,6 +98,7 @@ function serializeProduct(product: Product): SerializedProduct {
     variants: product.variants.map(serializeVariant),
     categoryIds: product.categoryIds,
     salesChannelIds: product.salesChannelIds,
+    media: product.media.map(serializeMedia),
   };
 }
 
@@ -167,6 +189,58 @@ function parseVariantEntity(raw: unknown): ProductVariant | null {
   }
 }
 
+function parseMediaEntity(raw: unknown): ProductMedia | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  if (typeof raw.id !== "string" || typeof raw.url !== "string") {
+    return null;
+  }
+  if (raw.kind !== undefined && typeof raw.kind !== "string") {
+    return null;
+  }
+  if (raw.altText !== null && raw.altText !== undefined && typeof raw.altText !== "string") {
+    return null;
+  }
+  const sortOrder = raw.sortOrder;
+  if (
+    typeof sortOrder !== "number" ||
+    !Number.isInteger(sortOrder) ||
+    sortOrder < 0
+  ) {
+    return null;
+  }
+  try {
+    return new ProductMedia({
+      id: raw.id,
+      url: raw.url,
+      kind: typeof raw.kind === "string" ? raw.kind : undefined,
+      altText: typeof raw.altText === "string" ? raw.altText : null,
+      sortOrder,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function parseMediaArray(value: unknown): ProductMedia[] | null {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const media: ProductMedia[] = [];
+  for (const entry of value) {
+    const parsed = parseMediaEntity(entry);
+    if (parsed === null) {
+      return null;
+    }
+    media.push(parsed);
+  }
+  return media;
+}
+
 function parseProductEntity(raw: unknown): Product | null {
   if (!isRecord(raw)) {
     return null;
@@ -197,6 +271,10 @@ function parseProductEntity(raw: unknown): Product | null {
   if (categoryIds === null || salesChannelIds === null) {
     return null;
   }
+  const media = parseMediaArray(raw.media);
+  if (media === null) {
+    return null;
+  }
   try {
     return new Product({
       id: raw.id,
@@ -206,6 +284,7 @@ function parseProductEntity(raw: unknown): Product | null {
       variants,
       categoryIds,
       salesChannelIds,
+      media,
     });
   } catch {
     return null;

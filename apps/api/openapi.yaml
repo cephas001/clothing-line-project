@@ -213,6 +213,10 @@ paths:
       responses:
         "201":
           description: Review created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitReviewResponse"
         "400":
           $ref: "#/components/responses/StandardErrorResponse"
         "403":
@@ -1349,7 +1353,30 @@ paths:
         Accepts tracking events, updates the matching fulfilment, and optionally notifies the
         customer. Unknown tracking numbers are ignored idempotently; out-of-order events are
         dropped.
+
+        SIGNATURE SECRET MECHANISM: the request body is consumed as RAW BYTES and verified
+        against the HMAC-SHA512 signature in the `x-courier-signature` header (computed over
+        those exact bytes with the dedicated `COURIER_TRACKING_WEBHOOK_SECRET` — never any API
+        key) BEFORE any JSON parsing. A missing or mismatched signature returns `401` and the
+        event is discarded (fail closed); the raw body is never parsed without a verified
+        signature.
+
+        After verification the payload is validated and mapped to a provider-neutral logistics
+        event, then enqueued for background processing. This request NEVER updates fulfillment,
+        NEVER creates shipments, NEVER calls the courier, and holds NO database transaction. A
+        `204` acknowledges receipt (and stops the courier retrying); a `401` (invalid signature)
+        or `500` (processing outage) causes the courier to retry; a `400` (malformed payload) is
+        permanent and should not be retried.
       security: []
+      parameters:
+        - name: x-courier-signature
+          in: header
+          required: true
+          description: |
+            HMAC-SHA512 (hex) signature of the raw request body, computed by the courier with
+            the dedicated webhook secret. Must be verified against the exact raw bytes.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -1360,6 +1387,8 @@ paths:
         "204":
           description: Tracking event processed (or ignored).
         "400":
+          $ref: "#/components/responses/StandardErrorResponse"
+        "401":
           $ref: "#/components/responses/StandardErrorResponse"
         "500":
           $ref: "#/components/responses/StandardErrorResponse"
@@ -1948,9 +1977,10 @@ components:
             code:
               type: string
               enum:
+                # Mirrors the ErrorCode union in DomainError.ts exactly (one
+                # entry per code, no duplicates, no stale codes). Keep this list
+                # in sync with the domain union + mapDomainErrorToHttp.
                 - VALIDATION_ERROR
-                - CART_NOT_FOUND
-                - REGION_NOT_FOUND
                 - INVALID_EMAIL
                 - NEGATIVE_AMOUNT
                 - INVALID_CURRENCY
@@ -1962,6 +1992,8 @@ components:
                 - INTERNAL_ERROR
                 - JOB_PROCESSING_ERROR
                 - PAYMENT_VERIFICATION_FAILED
+                - LOGISTICS_VERIFICATION_FAILED
+                - LOGISTICS_EVENT_FULFILLMENT_NOT_FOUND
                 - EXTERNAL_SERVICE_TIMEOUT
                 - EXTERNAL_SERVICE_UNAVAILABLE
                 - EXTERNAL_SERVICE_ERROR
@@ -1973,6 +2005,7 @@ components:
                 - PAYMENT_REQUIRED
                 - INVALID_RETURN_ITEM
                 - INVALID_INPUT
+                - REGION_NOT_FOUND
                 - DUPLICATE_TRANSACTION
                 - TRANSACTION_NOT_FOUND
                 - INVALID_PAYMENT_AMOUNT
@@ -1988,11 +2021,15 @@ components:
                 - ACCOUNT_LOCKED
                 - BUSINESS_UNIT_ALREADY_EXISTS
                 - PAYMENT_DECLINED
+                - REFUND_REQUIRES_REVIEW
+                - SHIPMENT_REQUIRES_RECONCILIATION
                 - INVALID_SIGNATURE
-                - REGION_NOT_FOUND
                 - RESOURCE_NOT_FOUND
                 - CART_NOT_FOUND
                 - PRODUCT_NOT_FOUND
+                - INSUFFICIENT_INVENTORY
+                - INSUFFICIENT_SINGLE_LOCATION_STOCK
+                - SOURCING_FAILED
               example: OUT_OF_STOCK
             message:
               type: string
@@ -2019,15 +2056,51 @@ components:
         description:
           type: string
           nullable: true
+        categoryIds:
+          type: array
+          description: Category membership ids (storefront navigation/filtering). Always emitted (empty array when none).
+          items:
+            type: string
+        media:
+          type: array
+          description: >
+            Product media references (images) in deterministic display order
+            (lowest sortOrder first). URLs are public-fetchable locations; the
+            backend never serves binaries from the catalog. Always emitted
+            (empty array when none).
+          items:
+            $ref: "#/components/schemas/ProductMedia"
         variants:
           type: array
           items:
             $ref: "#/components/schemas/ProductVariant"
 
+    ProductMedia:
+      type: object
+      description: Product media reference (never the binary itself).
+      required: [id, url, kind, altText, sortOrder]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          description: Public-fetchable media location (relative asset path or CDN URL).
+        kind:
+          type: string
+          description: Media classification (defaults to "image").
+        altText:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+          minimum: 0
+          description: Deterministic display order (lower first).
+
     ProductVariant:
       type: object
-      description: Product variant DTO with inventory and backorder flag.
-      required: [id, productId, sku, inventoryQuantity, allowBackorder, version]
+      description: Product variant DTO with inventory, backorder flag, and the authoritative regional price.
+      required: [id, productId, sku, inventoryQuantity, allowBackorder, version, priceMinor]
       properties:
         id:
           type: string
@@ -2047,6 +2120,16 @@ components:
         version:
           type: integer
           description: Optimistic-lock version, incremented on every inventory change.
+        priceMinor:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: >
+            Authoritative regional price for this variant in minor units
+            (cents/kobo of the region's currency), resolved server-side from the
+            pricing service for the request's region_id. Null when no regional
+            price exists for this variant. This is the ONLY price authority —
+            clients must never derive, substitute, or invent a price.
 
     ProductList:
       type: object
@@ -3063,6 +3146,16 @@ components:
           type: string
           maxLength: 5000
 
+    SubmitReviewResponse:
+      type: object
+      required: [success]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          const: true
+          description: The review was persisted.
+
     AuthenticateRequest:
       type: object
       required: [email, password]
@@ -3196,6 +3289,16 @@ components:
     ReturnRequest:
       type: object
       required: [orderId, items]
+      description: |
+        Return authorization request. The prorated `refundAmountMinor` is computed
+        AUTHORITATIVELY server-side from the order's historical pricing — a client
+        can never dictate a refund amount.
+
+        When `requireReturnLabel` is true, the RETURN courier + service rate must
+        be supplied in `returnSelection` (the courier the customer returns the item
+        with). The refund amount is NEVER derived from `returnSelection.amountMinor`
+        — that field is only the return-label courier rate and is never used for any
+        charge or refund decision.
       properties:
         orderId:
           type: string
@@ -3220,6 +3323,41 @@ components:
           type: boolean
           default: true
           description: When true, a return label is requested from the logistics provider.
+        returnSelection:
+          $ref: "#/components/schemas/ReturnSelection"
+          description: Required when `requireReturnLabel` is true.
+
+    ReturnSelection:
+      type: object
+      required: [courierId, serviceCode, amountMinor]
+      additionalProperties: false
+      description: |
+        The RETURN courier + service rate the customer selected. `courierId` and
+        `serviceCode` drive the provider label; `amountMinor` is the return-label
+        courier rate ONLY and never affects the refund (the refund is prorated
+        server-side from order pricing).
+      properties:
+        quoteId:
+          type: string
+          format: uuid
+          description: Application return-rates quote id when applicable.
+        courierId:
+          type: string
+          description: Provider courier identity for the return label.
+        serviceCode:
+          type: string
+          description: Provider service code for the return label.
+        serviceLevel:
+          type: string
+        amountMinor:
+          type: integer
+          minimum: 0
+          description: Return-label courier rate in minor units (never a refund amount).
+        currency:
+          type: string
+        etaDays:
+          type: integer
+          minimum: 0
 
     SwapRequest:
       type: object
@@ -3333,11 +3471,14 @@ components:
 
     DispatchFulfillmentRequest:
       type: object
-      properties:
-        preferredCourier:
-          type: string
-        serviceLevel:
-          type: string
+      additionalProperties: false
+      description: >
+        Dispatch is snapshot-authoritative: the courier, service level, destination,
+        parcel items and origin all come EXCLUSIVELY from the FROZEN shipping +
+        sourcing snapshots recorded at checkout/finalization. The request body is
+        therefore EMPTY — no courier, service-level, or financial hints are accepted,
+        and a client can never choose a courier. Any body fields are rejected
+        (VALIDATION_ERROR, 400).
 
     CourierTrackingWebhook:
       type: object

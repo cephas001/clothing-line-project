@@ -140,6 +140,12 @@ export interface LogisticsEventJobPayload {
   courier?: string | null;
   status?: string | null;
   occurredAt?: string | null;
+  /**
+   * When the provider event explicitly opts OUT of customer notification
+   * (e.g. the courier-tracking webhook's `notifyCustomer: false`). Absent/true
+   * keeps the default notify-on-tracking-change behavior.
+   */
+  notifyCustomer?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -167,6 +173,16 @@ function optionalString(value: unknown, field: string): string | null {
     );
   }
   return value.trim();
+}
+
+function readOptionalBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new DomainError(
+      "VALIDATION_ERROR",
+      `Job payload field '${field}' must be a boolean.`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -338,7 +354,7 @@ export function parseLogisticsEventJobPayload(
   }
 
   const provider = requiredString(value.provider, "provider");
-  if (provider !== "shipbubble") {
+  if (provider !== "shipbubble" && provider !== "courier") {
     throw new DomainError(
       "VALIDATION_ERROR",
       `Job payload field 'provider' must be a known logistics provider; received "${provider}".`,
@@ -373,7 +389,14 @@ export function parseLogisticsEventJobPayload(
       "Job payload field 'occurredAt' must be a valid date string.",
     );
   }
+  const notifyCustomer =
+    value.notifyCustomer === undefined || value.notifyCustomer === null
+      ? undefined
+      : readOptionalBoolean(value.notifyCustomer, "notifyCustomer");
 
+  // The queue contract is byte-identical to the pre-courier shape: an absent
+  // notifyCustomer (the Shipbubble default) stays an OMITTED key — only an
+  // explicit `false` (courier-tracking webhook) is carried into the queue.
   return {
     provider,
     eventKey,
@@ -383,6 +406,7 @@ export function parseLogisticsEventJobPayload(
     courier,
     status,
     occurredAt,
+    ...(notifyCustomer === undefined ? {} : { notifyCustomer }),
   };
 }
 

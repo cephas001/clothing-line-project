@@ -50,14 +50,20 @@ import { buildNotificationService } from "./notificationService";
 import { RegionalPricingService } from "../services/RegionalPricingService";
 import { RegionalTaxCalculationService } from "../services/RegionalTaxCalculationService";
 import {
+  createAdminRouter,
   createAuthRouter,
+  createCartRouter,
   createCatalogRouter,
   createCheckoutShippingRouter,
+  createCourierTrackingWebhookRouter,
+  createCustomersRouter,
+  createOrdersRouter,
   createPaymentInitializationRouter,
   createPaymentWebhookRouter,
   createShipbubbleWebhookRouter,
   createSwapRouter,
 } from "../../adapters/http";
+import { CourierTrackingWebhookPayloadMapper } from "../services/CourierTrackingWebhookPayloadMapper";
 import type { Router } from "express";
 
 export interface BootstrapOptions {
@@ -123,6 +129,37 @@ export interface ApplicationRuntime {
    * shipments, never calls Shipbubble, and never opens a DB transaction.
    */
   logisticsWebhookRouter?: Router;
+  /**
+   * Courier-tracking webhook HTTP router (POST /store/webhooks/courier-tracking),
+   * present only when COURIER_TRACKING_WEBHOOK_SECRET is configured. Pure
+   * transport boundary: verify signature (raw bytes) -> parse + map provider
+   * event -> enqueue. It never updates fulfillment, never creates shipments,
+   * and never holds a DB transaction (L5 LOGISTICS CRITICAL).
+   */
+  courierTrackingWebhookRouter?: Router;
+  /**
+   * Cart HTTP router (mounted at /store/carts). Always present; the variant
+   * line-item + shipping-address routes are registered only when the
+   * corresponding use case is wired (pricing/tax service configured).
+   */
+  cartRouter: Router;
+  /**
+   * Customer HTTP router (mounted at /store). Always present; the
+   * password-reset/initiate route is registered only when the notification
+   * service is configured (unwired -> 404, never faked).
+   */
+  customersRouter: Router;
+  /**
+   * Order HTTP router (mounted at /store). Always present; the returns and
+   * fulfillments routes are registered only when the logistics service is
+   * configured (unwired -> 404, never faked).
+   */
+  ordersRouter: Router;
+  /**
+   * Admin HTTP router (mounted at /admin). Always present: every admin use case
+   * depends only on core dependencies.
+   */
+  adminRouter: Router;
   /**
    * Graceful shutdown: close the queue connections, the Postgres pool, and the
    * session-revocation Redis client. Background workers are not owned by this
@@ -404,6 +441,110 @@ export function bootstrapApplication(
     logger,
   });
 
+  // --- Courier-tracking webhook HTTP adapter (L5) -----------------------------
+  // Mounted ONLY when the dedicated COURIER_TRACKING_WEBHOOK_SECRET is present
+  // (a production webhook signing secret is never defaulted). The secret is
+  // DISTINCT from any API key. The router is a TRANSPORT boundary:
+  // verify signature (HMAC-SHA512 over the RAW bytes, BEFORE JSON parsing) ->
+  // parse + map -> enqueue. It never updates fulfillment, never creates
+  // shipments, and never opens a DB transaction — the LogisticsEventWorker
+  // reconciles state later, idempotently by deterministic event key. When the
+  // secret is absent the endpoint is not mounted (requests receive a 404); it
+  // is never faked or silently weakened.
+  const courierTrackingWebhookMapper = new CourierTrackingWebhookPayloadMapper();
+  let courierTrackingWebhookRouter: Router | undefined;
+  if (config.courierTrackingWebhookSecret) {
+    courierTrackingWebhookRouter = createCourierTrackingWebhookRouter({
+      verifySignature:
+        useCases.useCases.logistics.verifyLogisticsEventSignature,
+      queueLogisticsEvent: useCases.useCases.logistics.queueLogisticsEvent,
+      mapper: courierTrackingWebhookMapper,
+      webhookSecret: config.courierTrackingWebhookSecret,
+      logger,
+    });
+  }
+
+  // --- Cart HTTP adapter (API-L1 / F3) --------------------------------------
+  // Always constructed; the variant line-item route is registered only when the
+  // pricing service is configured (AddCartLineItemUseCase wired) and the
+  // shipping-address route only when the tax service is configured
+  // (SetCheckoutShippingAddressUseCase wired). Pure transport boundary.
+  const cartRouter = createCartRouter({
+    initializeCartSession: useCases.useCases.cart.initializeCartSession,
+    getCart: useCases.useCases.cart.getCart,
+    addCartLineItem: useCases.useCases.cart.addCartLineItem,
+    addCustomLineItem: useCases.useCases.cart.addCustomLineItem,
+    updateLineItemQuantity: useCases.useCases.cart.updateLineItemQuantity,
+    removeCartLineItem: useCases.useCases.cart.removeCartLineItem,
+    applyDiscountCode: useCases.useCases.cart.applyDiscountCode,
+    mergeGuestCartToCustomer: useCases.useCases.cart.mergeGuestCartToCustomer,
+    setCheckoutShippingAddress:
+      useCases.useCases.checkout.setCheckoutShippingAddress,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
+  // --- Customer HTTP adapter (API-L1 / F3) ----------------------------------
+  // Always constructed; the password-reset/initiate route is registered only
+  // when the notification service is configured (InitiatePasswordResetUseCase
+  // wired; otherwise 404, never faked). Pure transport boundary.
+  const customersRouter = createCustomersRouter({
+    registerCustomerAccount: useCases.useCases.customers.registerCustomerAccount,
+    getCustomerProfile: useCases.useCases.customers.getCustomerProfile,
+    getCustomerAddresses: useCases.useCases.customers.getCustomerAddresses,
+    initiatePasswordReset: useCases.useCases.customers.initiatePasswordReset,
+    completePasswordReset: useCases.useCases.customers.completePasswordReset,
+    manageAddressBook: useCases.useCases.customers.manageAddressBook,
+    manageB2BBusinessUnit: useCases.useCases.customers.manageB2BBusinessUnit,
+    requestQuote: useCases.useCases.customers.requestQuote,
+    approveB2BQuote: useCases.useCases.customers.approveB2BQuote,
+    retrieveOrderHistory: useCases.useCases.customers.retrieveOrderHistory,
+    processCustomerDataErasure:
+      useCases.useCases.customers.processCustomerDataErasure,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
+  // --- Order HTTP adapter (API-L1 / F3) -------------------------------------
+  // Always constructed; the returns and fulfillments routes are registered only
+  // when the logistics service is configured (unwired -> 404, never faked).
+  // Pure transport boundary.
+  const ordersRouter = createOrdersRouter({
+    getOrder: useCases.useCases.logistics.getOrder,
+    initiateReturnAuthorization:
+      useCases.useCases.logistics.initiateReturnAuthorization,
+    proposeOrderEdit: useCases.useCases.logistics.proposeOrderEdit,
+    confirmOrderEdit: useCases.useCases.logistics.confirmOrderEdit,
+    dispatchOrderFulfillment:
+      useCases.useCases.logistics.dispatchOrderFulfillment,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
+  // --- Admin HTTP adapter (API-L1 / F3) -------------------------------------
+  // Always constructed: every admin use case depends only on core
+  // dependencies. Pure transport boundary.
+  const adminRouter = createAdminRouter({
+    createProduct: useCases.useCases.admin.createProduct,
+    createProductVariant: useCases.useCases.admin.createProductVariant,
+    configureRegionalPricing:
+      useCases.useCases.admin.configureRegionalPricing,
+    createPromotionRule: useCases.useCases.admin.createPromotionRule,
+    createSalesChannel: useCases.useCases.admin.createSalesChannel,
+    manageCategories: useCases.useCases.admin.manageCategories,
+    manageAdminRolePermissions:
+      useCases.useCases.admin.manageAdminRolePermissions,
+    importBulkCatalogData: useCases.useCases.admin.importBulkCatalogData,
+    listDeadLetterJobs: useCases.useCases.admin.listDeadLetterJobs,
+    retryDeadLetterJob: useCases.useCases.admin.retryDeadLetterJob,
+    generateDraftOrder: useCases.useCases.logistics.generateDraftOrder,
+    determineSourcingLocation:
+      useCases.useCases.inventory.determineSourcingLocation,
+    pruneAbandonedCarts: useCases.useCases.cart.pruneAbandonedCarts,
+    tokenService: infrastructure.tokenService,
+    logger,
+  });
+
   let shutDown = false;
 
   const runtime: ApplicationRuntime = {
@@ -416,6 +557,11 @@ export function bootstrapApplication(
     swapRouter,
     checkoutShippingRouter,
     logisticsWebhookRouter,
+    courierTrackingWebhookRouter,
+    cartRouter,
+    customersRouter,
+    ordersRouter,
+    adminRouter,
     authRouter,
     catalogRouter,
 
@@ -459,6 +605,19 @@ export function bootstrapApplication(
         logisticsWebhookRouter
           ? "Shipbubble webhook: mounted (/store/webhooks/shipbubble)"
           : "Shipbubble webhook: NOT mounted (SHIPBUBBLE_WEBHOOK_SECRET not set)",
+      );
+      lines.push(
+        courierTrackingWebhookRouter
+          ? "Courier-tracking webhook: mounted (/store/webhooks/courier-tracking)"
+          : "Courier-tracking webhook: NOT mounted (COURIER_TRACKING_WEBHOOK_SECRET not set)",
+      );
+      lines.push("Cart: mounted (/store/carts)");
+      lines.push("Customers: mounted (/store)");
+      lines.push("Orders: mounted (/store/orders, /store/order-edits)");
+      lines.push(
+        `Admin: mounted (/admin/products, /admin/promotions, /admin/sales-channels, /admin/categories, /admin/draft-orders, /admin/sourcing-location, /admin/carts/prune, /admin/imports, /admin/queues/${
+          useCases.useCases.admin.adjustInventoryLevel ? "+ /admin/variants/:id/inventory" : ""
+        })`,
       );
       lines.push("Auth: mounted (/store/auth, /store/customers/logout)");
       lines.push(

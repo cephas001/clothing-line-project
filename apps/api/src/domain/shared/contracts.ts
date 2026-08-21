@@ -374,8 +374,15 @@ export interface ReturnLabelResult {
  * provider-specific webhook mapper is the ONLY module that knows a provider's
  * raw payload shape; everything past it (domain, generic queue contracts,
  * application use cases) sees only these neutral identities.
+ *
+ * - `"shipbubble"` — the Shipbubble fulfilment provider (HMAC-signed webhook,
+ *   events carry a provider shipment identity).
+ * - `"courier"` — the generic courier-tracking webhook (no signature, events
+ *   carry only a tracking number). Events from this provider reconcile the
+ *   local fulfillment by tracking number (see
+ *   `ProcessCourierTrackingEventUseCase`), never by a fabricated shipment id.
  */
-export type LogisticsProvider = "shipbubble";
+export type LogisticsProvider = "shipbubble" | "courier";
 
 /**
  * Normalized, provider-neutral logistics event vocabulary. The provider
@@ -440,6 +447,12 @@ export interface ProviderLogisticsEvent extends JsonObject {
   eventKey: string;
   /** Provider's own event id when the payload supplied one (kept for traceability). */
   providerEventId?: string;
+  /**
+   * Whether the event's origin explicitly opts OUT of customer notification
+   * (e.g. the courier-tracking webhook's `notifyCustomer: false`). Absent/true
+   * keeps the default notify-on-tracking-change behavior.
+   */
+  notifyCustomer?: boolean;
   /** Provider-neutral structured extras. NEVER raw provider bodies or secrets. */
   metadata?: JsonObject;
 }

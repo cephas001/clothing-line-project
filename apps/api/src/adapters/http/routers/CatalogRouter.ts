@@ -1,9 +1,9 @@
 // apps/api/src/adapters/http/routers/CatalogRouter.ts
 
 // HTTP adapter for the storefront catalogue endpoints:
-//   GET  /products                     -> BrowseCatalogUseCase
+//   GET  /products                     -> BrowseCatalogUseCase (wired only with the pricing service)
 //   GET  /products/search              -> SearchProductsUseCase (wired only with a search service)
-//   GET  /products/:id                 -> GetProductDetailsUseCase
+//   GET  /products/:id                 -> GetProductDetailsUseCase (wired only with the pricing service)
 //   GET  /products/:id/related         -> ResolveCrossSellingProductsUseCase (wired only with a recommendation engine)
 //   POST /products/:id/reviews         -> SubmitProductReviewUseCase (bearer auth REQUIRED)
 //   GET  /variants/:id/availability    -> GetVariantAvailabilityUseCase (wired only with a pricing service)
@@ -15,7 +15,8 @@
 // serialized directly: every Product/Variant is reduced through the public
 // projections in ../projections (the OpenAPI Product contract fields only —
 // internal underscore state and category/sales-channel membership stay
-// server-side).
+// server-side). Every variant's priceMinor is the AUTHORITATIVE regional price
+// resolved by the use cases — never invented or derived by a client.
 //
 // Boundary rules:
 //   - sales_channel_id / region_id context headers are OPTIONAL at the
@@ -78,10 +79,10 @@ const REVIEW_BODY_LIMIT = "100kb";
 const REVIEW_BODY_KEYS = ["rating", "comment"] as const;
 
 export interface CatalogRouterDeps {
-  /** Always wired: depends only on core dependencies. */
-  browseCatalog: BrowseCatalogUseCase;
-  /** Always wired. */
-  getProductDetails: GetProductDetailsUseCase;
+  /** Present only when the regional pricing service is wired (always in the API runtime). */
+  browseCatalog?: BrowseCatalogUseCase;
+  /** Present only when the regional pricing service is wired. */
+  getProductDetails?: GetProductDetailsUseCase;
   /** Always wired. */
   retrieveCategoryTree: RetrieveCategoryTreeUseCase;
   /** Always wired. */
@@ -100,25 +101,30 @@ export interface CatalogRouterDeps {
 export function createCatalogRouter(deps: CatalogRouterDeps): express.Router {
   const router = express.Router();
 
-  // GET /products — paginated, region/channel-scoped catalogue browse.
-  router.get("/products", async (req: Request, res: Response) => {
-    try {
-      const result = await deps.browseCatalog.execute({
-        salesChannelId: readOptionalHeader(req, "sales_channel_id") ?? "",
-        regionId: readOptionalHeader(req, "region_id") ?? "",
-        categoryId: readQueryString(req.query.categoryId, "categoryId"),
-        searchQuery: readQueryString(req.query.searchQuery, "searchQuery"),
-        limit: readQueryInt(req.query.limit, "limit", 1, 200, 20),
-        offset: readQueryInt(req.query.offset, "offset", 0, 10_000_000, 0),
-      });
-      // Explicit public projection: domain entities are never serialized
-      // directly (they would leak internal underscore state and drop the
-      // contract fields). See ../projections.
-      res.status(200).json(toProductListResponse(result));
-    } catch (err: unknown) {
-      rejectRequest(deps.logger, res, err, "Catalogue browse");
-    }
-  });
+  // GET /products — paginated, region/channel-scoped catalogue browse. The
+  // route exists only when the pricing service is wired: every returned variant
+  // carries the AUTHORITATIVE regional price (priceMinor), so a catalogue
+  // without pricing is never served.
+  if (deps.browseCatalog) {
+    router.get("/products", async (req: Request, res: Response) => {
+      try {
+        const result = await deps.browseCatalog!.execute({
+          salesChannelId: readOptionalHeader(req, "sales_channel_id") ?? "",
+          regionId: readOptionalHeader(req, "region_id") ?? "",
+          categoryId: readQueryString(req.query.categoryId, "categoryId"),
+          searchQuery: readQueryString(req.query.searchQuery, "searchQuery"),
+          limit: readQueryInt(req.query.limit, "limit", 1, 200, 20),
+          offset: readQueryInt(req.query.offset, "offset", 0, 10_000_000, 0),
+        });
+        // Explicit public projection: domain entities are never serialized
+        // directly (they would leak internal underscore state and drop the
+        // contract fields). See ../projections.
+        res.status(200).json(toProductListResponse(result));
+      } catch (err: unknown) {
+        rejectRequest(deps.logger, res, err, "Catalogue browse");
+      }
+    });
+  }
 
   // GET /products/search — full-text search. MUST precede /products/:id so the
   // literal "search" segment is never captured as a product id.
@@ -131,7 +137,7 @@ export function createCatalogRouter(deps: CatalogRouterDeps): express.Router {
           regionId: readOptionalHeader(req, "region_id") ?? "",
           limit: readQueryInt(req.query.limit, "limit", 1, 200, 12),
         });
-        res.status(200).json(result.map(toProductResponse));
+        res.status(200).json(result.map((p) => toProductResponse(p)));
       } catch (err: unknown) {
         rejectRequest(deps.logger, res, err, "Product search");
       }
@@ -153,21 +159,24 @@ export function createCatalogRouter(deps: CatalogRouterDeps): express.Router {
     });
   }
 
-  // GET /products/:id — detailed product for a store context.
-  router.get("/products/:id", async (req: Request, res: Response) => {
-    try {
-      const product = await deps.getProductDetails.execute({
-        productId: readRequiredPathId(req.params.id, "productId"),
-        salesChannelId: readOptionalHeader(req, "sales_channel_id") ?? "",
-        regionId: readOptionalHeader(req, "region_id") ?? "",
-        expand: splitCsv(readQueryString(req.query.expand, "expand")),
-        fields: splitCsv(readQueryString(req.query.fields, "fields")),
-      });
-      res.status(200).json(toProductResponse(product));
-    } catch (err: unknown) {
-      rejectRequest(deps.logger, res, err, "Product details");
-    }
-  });
+  // GET /products/:id — detailed product for a store context. The route exists
+  // only when the pricing service is wired, mirroring GET /products.
+  if (deps.getProductDetails) {
+    router.get("/products/:id", async (req: Request, res: Response) => {
+      try {
+        const result = await deps.getProductDetails!.execute({
+          productId: readRequiredPathId(req.params.id, "productId"),
+          salesChannelId: readOptionalHeader(req, "sales_channel_id") ?? "",
+          regionId: readOptionalHeader(req, "region_id") ?? "",
+          expand: splitCsv(readQueryString(req.query.expand, "expand")),
+          fields: splitCsv(readQueryString(req.query.fields, "fields")),
+        });
+        res.status(200).json(toProductResponse(result.product, result.priceByVariant));
+      } catch (err: unknown) {
+        rejectRequest(deps.logger, res, err, "Product details");
+      }
+    });
+  }
 
   // GET /products/:id/related — cross-selling recommendations.
   if (deps.resolveCrossSellingProducts) {
@@ -181,7 +190,7 @@ export function createCatalogRouter(deps: CatalogRouterDeps): express.Router {
             regionId: readOptionalHeader(req, "region_id") ?? "",
             limit: readQueryInt(req.query.limit, "limit", 1, 50, 4),
           });
-          res.status(200).json(result.map(toProductResponse));
+          res.status(200).json(result.map((p) => toProductResponse(p)));
         } catch (err: unknown) {
           rejectRequest(deps.logger, res, err, "Related products");
         }

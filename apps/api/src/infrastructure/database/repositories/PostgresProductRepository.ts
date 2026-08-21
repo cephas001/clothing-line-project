@@ -11,6 +11,7 @@
 // column, so reads order by handle.
 
 import { Product } from "@api-domain-entities/Product";
+import { ProductMedia } from "@api-domain-entities/ProductMedia";
 import type { IProductRepository } from "@api-domain-interfaces/repositories/IProductRepository";
 import { TransactionContext } from "../transaction/TransactionContext";
 import { toRepositoryError } from "./errorMapping";
@@ -22,7 +23,21 @@ type ProductRow = {
   description: string | null;
 };
 
-function toDomain(row: ProductRow, categoryIds: string[], salesChannelIds: string[]): Product {
+type MediaRow = {
+  id: string;
+  product_id: string;
+  url: string;
+  kind: string;
+  alt_text: string | null;
+  sort_order: number;
+};
+
+function toDomain(
+  row: ProductRow,
+  categoryIds: string[],
+  salesChannelIds: string[],
+  media: ProductMedia[],
+): Product {
   return new Product({
     id: row.id,
     title: row.title,
@@ -30,6 +45,17 @@ function toDomain(row: ProductRow, categoryIds: string[], salesChannelIds: strin
     description: row.description ?? undefined,
     categoryIds,
     salesChannelIds,
+    media,
+  });
+}
+
+function toMediaDomain(row: MediaRow): ProductMedia {
+  return new ProductMedia({
+    id: row.id,
+    url: row.url,
+    kind: row.kind,
+    altText: row.alt_text,
+    sortOrder: row.sort_order,
   });
 }
 
@@ -38,9 +64,9 @@ export class PostgresProductRepository implements IProductRepository {
 
   private async loadMembership(
     productId: string,
-  ): Promise<{ categoryIds: string[]; salesChannelIds: string[] }> {
+  ): Promise<{ categoryIds: string[]; salesChannelIds: string[]; media: ProductMedia[] }> {
     const db = this.context.getDb();
-    const [categoryRows, salesChannelRows] = await Promise.all([
+    const [categoryRows, salesChannelRows, mediaRows] = await Promise.all([
       db
         .selectFrom("product_category")
         .select("category_id")
@@ -51,10 +77,18 @@ export class PostgresProductRepository implements IProductRepository {
         .select("sales_channel_id")
         .where("product_id", "=", productId)
         .execute(),
+      db
+        .selectFrom("product_media")
+        .selectAll()
+        .where("product_id", "=", productId)
+        .orderBy("sort_order")
+        .orderBy("id")
+        .execute(),
     ]);
     return {
       categoryIds: categoryRows.map((r) => r.category_id),
       salesChannelIds: salesChannelRows.map((r) => r.sales_channel_id),
+      media: mediaRows.map(toMediaDomain),
     };
   }
 
@@ -70,8 +104,8 @@ export class PostgresProductRepository implements IProductRepository {
       if (!row) {
         return null;
       }
-      const { categoryIds, salesChannelIds } = await this.loadMembership(row.id);
-      return toDomain(row, categoryIds, salesChannelIds);
+      const { categoryIds, salesChannelIds, media } = await this.loadMembership(row.id);
+      return toDomain(row, categoryIds, salesChannelIds, media);
     } catch (err: unknown) {
       throw toRepositoryError(err);
     }
@@ -89,8 +123,8 @@ export class PostgresProductRepository implements IProductRepository {
       if (!row) {
         return null;
       }
-      const { categoryIds, salesChannelIds } = await this.loadMembership(row.id);
-      return toDomain(row, categoryIds, salesChannelIds);
+      const { categoryIds, salesChannelIds, media } = await this.loadMembership(row.id);
+      return toDomain(row, categoryIds, salesChannelIds, media);
     } catch (err: unknown) {
       throw toRepositoryError(err);
     }
@@ -146,6 +180,27 @@ export class PostgresProductRepository implements IProductRepository {
             product.salesChannelIds.map((salesChannelId) => ({
               product_id: product.id,
               sales_channel_id: salesChannelId,
+            })),
+          )
+          .execute();
+      }
+
+      // Replace media references so the persisted rows mirror the aggregate.
+      await db
+        .deleteFrom("product_media")
+        .where("product_id", "=", product.id)
+        .execute();
+      if (product.media.length > 0) {
+        await db
+          .insertInto("product_media")
+          .values(
+            product.media.map((media) => ({
+              id: media.id,
+              product_id: product.id,
+              url: media.url,
+              kind: media.kind,
+              alt_text: media.altText,
+              sort_order: media.sortOrder,
             })),
           )
           .execute();

@@ -7,6 +7,8 @@
 import { ApproveB2BQuoteUseCase } from "@api/use-cases/customers/ApproveB2BQuoteUseCase";
 import { AuthenticateCustomerUseCase } from "@api/use-cases/customers/AuthenticateCustomerUseCase";
 import { CompletePasswordResetUseCase } from "@api/use-cases/customers/CompletePasswordResetUseCase";
+import { GetCustomerAddressesUseCase } from "@api/use-cases/customers/GetCustomerAddressesUseCase";
+import { GetCustomerProfileUseCase } from "@api/use-cases/customers/GetCustomerProfileUseCase";
 import { InitiatePasswordResetUseCase } from "@api/use-cases/customers/InitiatePasswordResetUseCase";
 import { ManageAddressBookUseCase } from "@api/use-cases/customers/ManageAddressBookUseCase";
 import { ManageB2BBusinessUnitUseCase } from "@api/use-cases/customers/ManageB2BBusinessUnitUseCase";
@@ -21,6 +23,8 @@ export interface CustomersUseCases {
   approveB2BQuote: ApproveB2BQuoteUseCase;
   authenticateCustomer: AuthenticateCustomerUseCase;
   completePasswordReset: CompletePasswordResetUseCase;
+  getCustomerAddresses: GetCustomerAddressesUseCase;
+  getCustomerProfile: GetCustomerProfileUseCase;
   initiatePasswordReset?: InitiatePasswordResetUseCase;
   manageAddressBook: ManageAddressBookUseCase;
   manageB2BBusinessUnit: ManageB2BBusinessUnitUseCase;
@@ -60,6 +64,18 @@ export function buildCustomersUseCases(
     idGenerator,
     logger,
     transactionManager,
+  );
+  const getCustomerAddresses = new GetCustomerAddressesUseCase(
+    deps.customerRepository,
+    auditLogService,
+    idGenerator,
+    logger,
+  );
+  const getCustomerProfile = new GetCustomerProfileUseCase(
+    deps.customerRepository,
+    auditLogService,
+    idGenerator,
+    logger,
   );
   const manageAddressBook = new ManageAddressBookUseCase(
     deps.customerRepository,
@@ -153,6 +169,8 @@ export function buildCustomersUseCases(
   report.wiredUseCases(
     "AuthenticateCustomerUseCase",
     "CompletePasswordResetUseCase",
+    "GetCustomerAddressesUseCase",
+    "GetCustomerProfileUseCase",
     "ManageAddressBookUseCase",
     "ManageB2BBusinessUnitUseCase",
     "ProcessCustomerDataErasureUseCase",
@@ -167,6 +185,8 @@ export function buildCustomersUseCases(
     approveB2BQuote,
     authenticateCustomer,
     completePasswordReset,
+    getCustomerAddresses,
+    getCustomerProfile,
     initiatePasswordReset,
     manageAddressBook,
     manageB2BBusinessUnit,

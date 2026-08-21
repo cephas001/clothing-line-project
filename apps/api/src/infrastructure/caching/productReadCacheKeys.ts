@@ -2,7 +2,7 @@
 
 // Deterministic, versioned cache-key derivation for the product read cache.
 //
-// Every entry lives under ONE versioned namespace (`product-read:v1:`). The key
+// Every entry lives under ONE versioned namespace (`product-read:v2:`). The key
 // is a SHA-256 hash of the canonicalized effective read context, so:
 //   - one logical request -> exactly one key (retries and equivalent queries
 //     collapse onto the same entry);
@@ -17,15 +17,16 @@
 // it does change the result it MUST change the key. Keeping this exact keeps
 // the cache free of cross-context poisoning.
 //
-// Versioning: `v1` is part of the namespace. Any future change to the key
-// derivation, the cached payload shape, or the projection semantics MUST bump
-// the namespace version so stale entries from the previous version can never be
-// read. The hash itself is also echoed inside every cached envelope
+// Versioning: the namespace version (`v2`) MUST be bumped whenever the key
+// derivation, the cached payload shape, or the projection semantics change so
+// stale entries from the previous version can never be read. v2 added the
+// `media` reference array to the cached payload (F4/M1). The hash itself is
+// also echoed inside every cached envelope
 // (productReadCacheSerialization) as defense-in-depth against a payload being
 // stored under the wrong key.
 //
 // Runtime invalidation (L9 Part 3): every key also embeds a monotonic
-// GENERATION (`product-read:v1:<generation>:<hash>`, generation folded into the
+// GENERATION (`product-read:v2:<generation>:<hash>`, generation folded into the
 // hashed canonical too). Invalidating the read cache means INCRementing the
 // generation counter (see ProductReadCacheInvalidator): all keys derived under
 // the previous generation become unreachable and are reaped by their TTL. This
@@ -36,7 +37,7 @@ import { createHash } from "node:crypto";
 import type { ProductReadQuery } from "@api/domain/shared/contracts";
 
 /** Single versioned namespace for every product read cache entry. */
-export const PRODUCT_READ_CACHE_NAMESPACE = "product-read:v1:";
+export const PRODUCT_READ_CACHE_NAMESPACE = "product-read:v2:";
 
 /**
  * Redis key holding the monotonic generation counter. Reads derive their key
