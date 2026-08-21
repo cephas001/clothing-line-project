@@ -69,7 +69,7 @@ export default function ProductAccordions({ description }: ProductAccordionsProp
                   transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
                 >
                 <p className="m-0 pb-4 font-display text-[13px] leading-relaxed text-[#3a3a3a] md:pb-5 md:text-[14px]">
-                    Standard shipping 3–5 business days (NGA). Free on all domestic orders. Final sale on jewelry; apparel returns accepted within 14 days, unworn with tags attached.
+                    Shipping options and rates are calculated at checkout for your delivery address. Final sale on jewelry; apparel returns accepted within 14 days, unworn with tags attached.
                 </p>
                 </motion.div> 
             )}

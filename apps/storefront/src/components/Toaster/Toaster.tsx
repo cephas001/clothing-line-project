@@ -4,8 +4,15 @@ import { useToast } from "@/context/ToastContext";
 
 export default function Toaster() {
     const { toasts } = useToast();
+    // F7 / G027 — the container is a polite live region so toast messages
+    // (add-to-cart confirmations, errors) are announced by screen readers
+    // without interrupting the current utterance.
     return (
-          <div className="fixed bottom-6 right-6 z-[200] flex flex-col gap-2 pointer-events-none">
+      <div
+        role="status"
+        aria-live="polite"
+        className="fixed bottom-6 right-6 z-[200] flex flex-col gap-2 pointer-events-none"
+      >
             <AnimatePresence>
               {toasts.map((toast) => (
                 <motion.div
@@ -20,6 +27,6 @@ export default function Toaster() {
                 </motion.div>
               ))}
             </AnimatePresence>
-          </div>  
+          </div>
     )
 }

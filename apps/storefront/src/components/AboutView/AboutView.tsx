@@ -1,7 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import { motion } from "framer-motion";
-import ProductImage from "../ProductImage/ProductImage";
+// F7/G023: the About slot rendered an empty src (placeholder-only). It now
+// uses an actual repository asset via a build-validated static import.
+import brandVisual from "@/assets/QUHA'ALT4W.png";
 
 export default function AboutView() {
   return (
@@ -24,7 +27,13 @@ export default function AboutView() {
           transition={{ duration: 0.6, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
           className="relative aspect-[4/5] overflow-hidden bg-placeholder"
         >
-          <ProductImage src="" alt="QUHÁ" label="BRAND" />
+          <Image
+            src={brandVisual}
+            alt="QUHÁ brand visual"
+            fill
+            sizes="(max-width: 768px) 100vw, 50vw"
+            className="object-cover"
+          />
         </motion.div>
 
         {/* RIGHT: text */}

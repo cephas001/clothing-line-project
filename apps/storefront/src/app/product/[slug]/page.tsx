@@ -1,44 +1,35 @@
-import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { getAllProducts, getProductBySlug, getRelated } from "@/lib/product";
-import ProductDetail from "@/components/ProductDetail/ProductDetail";
+import { listProducts } from "@/lib/api/catalog";
+import ProductDetailPage from "@/components/ProductDetailPage/ProductDetailPage";
+
 interface PageProps {
   params: Promise<{ slug: string }>;
 }
 
-// Build a static page for every product ahead of time.
-// This tells Next every valid value of [slug].
+export const dynamic = "force-dynamic";
 
-export function generateStaticParams() {
-  return getAllProducts().map((p) => ({ slug: p.slug }));
-}
-
-// Per-product <title> and description for browser tabs, Google, and shares.
+// Best-effort title: the API may be down at request/build time, so metadata
+// degrades to the generic page title rather than failing the route.
 export async function generateMetadata({
-    params,
+  params,
 }: PageProps): Promise<Metadata> {
-    // Unwrap the promise
-    const { slug } = await params;
-    const product = getProductBySlug(slug);
-    if(!product) return { title: "Not found - Grey Wears"};
-    return {
-        title: `${product.name} - Grey Wears`,
-        description: product.desc
-    };
+  const { slug } = await params;
+  try {
+    const { items } = await listProducts({ limit: 100 });
+    const product = items.find((p) => p.handle === slug);
+    if (product) {
+      return {
+        title: `${product.title} - QUHÁ`,
+        description: product.description ?? undefined,
+      };
+    }
+  } catch {
+    // API unreachable — fall through to the generic title.
+  }
+  return { title: "Shop — QUHÁ" };
 }
 
-export default async function ProductPage({
-    params,
-}: PageProps){
-    // Unwrap the promise
-    const { slug } = await params;
-    const product = getProductBySlug(slug);
-    if(!product) notFound();
-
-    const related = getRelated(product);
-      // Server Component fetched the data → hands it to the interactive
-      // Client Component that renders the gallery, size picker, add-to-cart, etc.
-      return <ProductDetail product={product} related={related} />
+export default async function ProductPage({ params }: PageProps) {
+  const { slug } = await params;
+  return <ProductDetailPage slug={slug} />;
 }
-
-

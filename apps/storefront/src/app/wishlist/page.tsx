@@ -2,9 +2,9 @@ import WishlistView from "@/components/WishlistView/WishlistView";
 
 export const metadata = {
   title: "Wishlist — QUHÁ",
-  description: "QUHÁ is a contemporary streetwear brand built around presence, individuality and self-expression.",
+  description: "Pieces you have saved for later at QUHÁ.",
 };
 
-export default function AboutPage() {
+export default function WishlistPage() {
   return <WishlistView />;
 }

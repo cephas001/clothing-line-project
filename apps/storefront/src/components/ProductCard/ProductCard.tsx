@@ -57,8 +57,8 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
             <Link href={`/product/${product.slug}`} className="block text-ink hover:opacity-100">
                 <div className="relative aspect-[4/5] overflow-hidden bg-placeholder">
                     <ProductImage
-                        src={product.images.studio}
-                        alt={product.name}
+                        src={product.media[0]?.url ?? ""}
+                        alt={product.media[0]?.alt || product.name}
                         label={product.name.split(" ")[0].toUpperCase()}
                     />
                     <button
@@ -103,8 +103,8 @@ export default function ProductCard({ product, index = 0 }: ProductCardProps) {
                     {product.name}
                     </h3>
                     <span className="whitespace-nowrap font-mono text-[13px]">
-                        {product.priceAmount > 0 
-                            ? format(product.priceAmount, product.currencyCode)
+                        {product.priceMinor != null
+                            ? format(product.priceMinor, product.currencyCode)
                         : "-"}
                     </span>
                 </div>

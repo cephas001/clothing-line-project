@@ -6,31 +6,42 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCart } from "@/context/CartContext";
-import { useCurrency } from "@/context/CurrencyContext";
 import { useWishlist } from "@/context/WishlistContext";
-import { Menu, Search, ShoppingBag, X, Heart } from "lucide-react";
-// A list of supported currencies.
-const CURRENCIES = [
-  { code: "NGN", label: "🇳🇬 NGN" },
-  { code: "USD", label: "🇺🇸 USD" },
-  { code: "GBP", label: "🇬🇧 GBP" },
-  { code: "CAD", label: "🇨🇦 CAD" },
-] as const;
+import { useAuth } from "@/context/AuthContext";
+import { useCategoryTree } from "@/lib/catalog";
+import { navCategories } from "@/lib/product";
+import { resolveAccountClick } from "@/lib/authGates";
+import { useDialogOverlay } from "@/lib/dialogA11y";
+import { Menu, Search, ShoppingBag, X, Heart, User } from "lucide-react";
 
 export default function Header() {
     const router = useRouter();
     // Gets the number of items in the cart (count) and the function to open/close the cart (toggleCart)
     const { count, toggleCart} = useCart();
-    // Gets the current selected currency and the function to change it
-    const { currency, setCurrency } = useCurrency();
     // Gets the number of items in the wishlist
     const { items } = useWishlist();
+    // Customer identity — drives the account button (guest -> auth drawer,
+    // authenticated -> /account).
+    const { customer, status, openAuth } = useAuth();
+    // F7 / G012 — category navigation is DERIVED from the authoritative
+    // GET /store/product-categories payload. No category is ever hardcoded;
+    // an empty tree honestly renders no category entries.
+    const { state: categoryState } = useCategoryTree();
+    const categories =
+      categoryState.status === "success" ? navCategories(categoryState.data) : [];
     // Controls whether the search bar is open or closed
     const [searchOpen, setSearchOpen] = useState(false);
     // Stores what the user is typing in the search input
     const [query, setQuery] = useState("");
     // Controls whether the mobile menu is open or closed
     const [menuOpen, setMenuOpen] = useState(false);
+    // F8: shared overlay behavior for the mobile menu — Escape closes, Tab
+    // cycles inside the panel, focus enters on open and returns to the
+    // opener (the hamburger button) on close.
+    const menuPanelRef = useDialogOverlay<HTMLDivElement>({
+      open: menuOpen,
+      onClose: () => setMenuOpen(false),
+    });
 
     const onSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -78,15 +89,17 @@ export default function Header() {
                 >
                     SHOP ALL
                 </Link>
-                <Link 
-                   className="font-mono text-[12px] hover:opacity-60 tracking-[0.08em] uppercase text-paper-2"
-                   href="/new"
-                >
-                    NEW ARRIVALS
-                </Link>
+                {categories.map((category) => (
+                  <Link
+                    key={category.id}
+                    className="font-mono text-[12px] hover:opacity-60 tracking-[0.08em] uppercase text-paper-2"
+                    href={`/shop?category=${category.slug}`}
+                  >
+                    {category.name.toUpperCase()}
+                  </Link>
+                ))}
             </nav> 
 
-        {/* TO BE REPLACED WITH THE REAL LOGO */}
              <Link 
                 className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 font-display text-[15px] font-extrabold tracking-[0.1em] text-paper-2 hover:opacity-60 md:text-[20px] md:tracking-[0.14em]"
                 href="/"
@@ -102,17 +115,6 @@ export default function Header() {
 
               </Link>
               <div className="flex items-center gap-4 md:gap-5">
-                <select
-                   aria-label="Currency" 
-                   className="hidden cursor-pointer borderborder-[#3a3a3a] bg-transparent px-2 py-1.5 font-mono text-[11px] uppercase tracking-[0.05em] text-paper-2 md:block"
-                   value={currency.toUpperCase()}
-                   onChange={(e) => setCurrency(e.target.value.toLowerCase())}
-                >
-                    {CURRENCIES.map((c) => (
-                        <option key={c.code} className="text-ink">{c.label}</option>
-                    ))}
-                </select>
-
                 <button
                    type="button"
                    onClick={() => setSearchOpen((o) => !o)} 
@@ -120,6 +122,25 @@ export default function Header() {
                    className="flex cursor-pointer border-none bg-transparent p-1 text-paper-2"
                 >
                     <Search size={17} strokeWidth={1.5} className="md:!h-[18px] md:!w-[18px]" />
+                </button>
+                <button
+                   type="button"
+                   onClick={() => {
+                     // F8: the click decision is a pure identity gate —
+                     // while resolution is in flight the button waits
+                     // (neither a drawer nor a navigation can present a
+                     // state that resolution is about to contradict); a
+                     // known guest gets the auth drawer; an authenticated
+                     // customer navigates to /account.
+                     const action = resolveAccountClick(status);
+                     if (action === "navigate") router.push("/account");
+                     if (action === "open-auth") openAuth();
+                   }}
+                   aria-label={status === "authenticated" ? `Account, ${customer?.firstName}` : "Sign in"}
+                   aria-busy={status === "loading"}
+                   className="flex cursor-pointer border-none bg-transparent p-1 text-paper-2"
+                 >
+                    <User size={17} strokeWidth={1.5} className="md:!h-[18px] md:!w-[18px]" />
                 </button>
                 <button
                    type="button"
@@ -141,7 +162,9 @@ export default function Header() {
                 >
                   <Heart size={17} strokeWidth={1.5} className="md:!h-[18px] md:!w-[18px]" />
                   {items.length > 0 && (
-                    <span>{items.length}</span>
+                    <span className="absolute -right-2 -top-1.5 flex h-[15px] min-w-[15px] items-center justify-center bg-paper-2 px-1 font-mono text-[9px] text-ink md:h-4 md:min-w-4 md:text-[10px]">
+                      {items.length}
+                    </span>
                   )}
                 </Link>
               </div>
@@ -166,6 +189,7 @@ export default function Header() {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="SEARCH"
+                        aria-label="Search the loaded catalogue by product name"
                         className="min-w-0 flex-1 border-none border-b border-ink bg-transparent py-1.5 font-mono text-[13px] uppercase tracking-[0.03em] text-ink outline-none placeholder:text-muted md:py-2 md:text-[14px]"
                        />
                        <button
@@ -192,8 +216,9 @@ export default function Header() {
                   transition={{ duration: 0.25 }}
                 >
                     <motion.aside
-                        key="menu-panel" 
-                        className="flex top-0 h-full left-0 z-[131] flex w-[78%] flex-col bg-ink md:hidden"
+                        key="menu-panel"
+                        ref={menuPanelRef}
+                        className="flex top-0 h-full left-0 z-[131] w-[78%] flex-col bg-ink md:hidden"
                         role="dialog"
                         aria-label="Menu"
                         initial={{ x: "-100%" }}
@@ -227,66 +252,17 @@ export default function Header() {
                         >
                            SHOP ALL
                         </Link>
-                        <Link
-                           href="/shop?sort=new"
-                           onClick={closeMenuAnd()}
-                           className="border-b border-[#2b2b2b] py-3.5 font-mono text-[13px] tracking-[0.06em] text-paper-2"
-                        >
-                           NEW ARRIVALS
-                        </Link>
-                        <Link
-                           href="/shop?category=jackets"
-                           onClick={closeMenuAnd()}
-                           className="border-b border-[#2b2b2b] py-3.5 font-mono text-[13px] tracking-[0.06em] text-paper-2"
-                        >
-                           JACKETS
-                        </Link>
-                        <Link
-                           href="/shop?category=jewelry"
-                           onClick={closeMenuAnd()}
-                           className="border-b border-[#2b2b2b] py-3.5 font-mono text-[13px] tracking-[0.06em] text-paper-2"
-                        >
-                           JEWELRY
-                        </Link>
-                        <Link
-                           href="/shop?category=accessories"
-                           onClick={closeMenuAnd()}
-                           className="border-b border-[#2b2b2b] py-3.5 font-mono text-[13px] tracking-[0.06em] text-paper-2"
-                        >
-                           ACCESSORIES
-                        </Link>
-                        <Link
-                           href="/shop?category=off-duties"
-                           onClick={closeMenuAnd()}
-                           className="border-b border-[#2b2b2b] py-3.5 font-mono text-[13px] tracking-[0.06em] text-paper-2"
-                        >
-                           OFF-DUTIES
-                        </Link>
+                        {categories.map((category) => (
+                          <Link
+                            key={category.id}
+                            href={`/shop?category=${category.slug}`}
+                            onClick={closeMenuAnd()}
+                            className="border-b border-[#2b2b2b] py-3.5 font-mono text-[13px] tracking-[0.06em] text-paper-2"
+                          >
+                            {category.name.toUpperCase()}
+                          </Link>
+                        ))}
                       </nav>
-
-                      <div className="mt-auto p-5">
-                         <div className="mb-3 font-mono text-[10px] tracking-[0.06em] text-muted-2">
-                           CURRENCY
-                          </div>
-                          <div className="grid grid-cols-4 gap-2">
-                            {CURRENCIES.map((c) => {
-                              const isActive = currency.toUpperCase() === c.code;
-                              return (
-                              <button 
-                                key={c.code}
-                                onClick={() => setCurrency(c.code.toLowerCase())}
-                                className={`cursor-pointer border py-2.5 font-mono text-[11px] tracking-[0.04em] ${
-                                  isActive
-                                    ? "border-paper-2 bg-paper-2 text-ink"
-                                    : "border-[#3a3a3a] bg-transparent text-paper-2"
-                                }`}
-                                >
-                                  {c.label}
-                              </button>
-                              )
-                            })}
-                          </div>
-                      </div>  
                     </motion.aside>
                 </motion.div>
                 </>

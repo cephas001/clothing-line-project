@@ -1,9 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { motion, type Variants } from "framer-motion";
 import { TypeAnimation } from "react-type-animation";
-import ProductImage from "../ProductImage/ProductImage";
+// F7/G023: /hero.jpg never existed (guaranteed 404 -> placeholder). The hero
+// now uses an actual repository asset via a build-validated static import.
+import heroVisual from "@/assets/QUHA'ALT4W.png";
 
 // This controls a group of items.
 // No special style when hidden 
@@ -29,13 +32,14 @@ const item: Variants = {
 export default function Hero() {
     return (
         <section className="relative h-[70vh] min-h-[480px] overflow-hidden bg-ink md:h-[88vh]">
-        <ProductImage
-            src="/hero.jpg"
-            alt="Editorial hero"
-            label="EDITORIAL HERO"
+        <Image
+            src={heroVisual}
+            alt="QUHÁ brand visual"
+            fill
             sizes="100vw"
             priority
-        /> 
+            className="object-cover"
+        />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/5 from-40% to-black/85" />
         <motion.div
            className="absolute inset-x-0 bottom-0 p-6 md:p-14"
@@ -63,8 +67,8 @@ export default function Hero() {
                         "BUILT TO OUTLAST TRENDS.",
                         3000,
                     ]}
-                    speed={160}
-                    deletionSpeed={180}
+                    speed={{ type: "keyStrokeDelayInMs", value: 160 }}
+                    deletionSpeed={{ type: "keyStrokeDelayInMs", value: 180 }}
                     cursor={true}
                     repeat={Infinity}
                     wrapper="span"

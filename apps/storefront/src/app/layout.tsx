@@ -2,12 +2,14 @@ import type { Metadata } from "next";
 import { Archivo, Space_Mono } from "next/font/google";
 import "./globals.css";
 import { CurrencyProvider } from "@/context/CurrencyContext";
-import { CartProvider } from "@/context/CartContext";
 import { ToastProvider } from "@/context/ToastContext";
+import { AuthProvider } from "@/context/AuthContext";
+import { CartProvider } from "@/context/CartContext";
 import { WishlistProvider } from "@/context/WishlistContext";
 import Header from "@/components/Header/Header";
 import Footer from "@/components/Footer/Footer";
 import CartDrawer from "@/components/CartDrawer/CartDrawer";
+import AuthDrawer from "@/components/AuthDrawer/AuthDrawer";
 import BackToTop from "@/components/BackToTop/BackToTop";
 import Toaster from "@/components/Toaster/Toaster";
 const archivo = Archivo({
@@ -45,6 +47,7 @@ export default function RootLayout({
       <body>
         <CurrencyProvider>
         <ToastProvider>
+        <AuthProvider>
         <CartProvider>
           <WishlistProvider>
           <Header />
@@ -52,9 +55,11 @@ export default function RootLayout({
           <Footer />
           <Toaster />
           <CartDrawer />
+          <AuthDrawer />
           <BackToTop />
           </WishlistProvider>
         </CartProvider>
+        </AuthProvider>
         </ToastProvider>
         </CurrencyProvider>
       </body>
