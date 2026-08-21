@@ -32,3 +32,5 @@ docs
 
 # AI tooling
 .opencode/
+# Local Turbo cache
+.turbo/
