@@ -6,8 +6,8 @@ Guidance for AI tools and contributors working on this repository. Read this bef
 
 **Headless e-commerce monorepo** (Turborepo + pnpm workspace). Domain consists of:
 
-- `apps/api` — Backend domain logic written in **Clean Architecture / Domain-Driven Design**. Contains domain entities, repository/service interfaces, and all **use cases**. `apps/infrastructure`, `apps/adapters`, and `apps/storefront` are scaffolded but the domain + use-case layer of the API is the most mature, working part.
-- `apps/storefront` — Next.js (App Router) storefront (16, React 19, Tailwind v4).
+- `apps/api` — Backend domain logic written in **Clean Architecture / Domain-Driven Design**. Contains domain entities, repository/service interfaces, all **use cases**, and the concrete adapters (`apps/api/src/infrastructure/` + `apps/api/src/adapters/`). The most mature, working part of the monorepo.
+- `apps/storefront` — Next.js (App Router) storefront (Next 16, React 19, Tailwind v4). Custom demo UI (cart drawer, wishlist, checkout views, client contexts) over a hardcoded static catalog; no API integration yet.
 - `apps/worker` — Background-worker runtime. Reuses the API's domain/application/infrastructure code (via `@api/*` tsconfig aliases) and composes the BullMQ workers (`PaymentEventWorker`, `LogisticsEventWorker`, `NotificationEventWorker`, `BulkCatalogImportWorker`). Workers contain no business logic; they invoke shared use cases.
 - `packages/shared-types` — Generated TypeScript types from the OpenAPI spec (via `openapi-typescript`). `main`/`types` point directly at `src/index.ts` (no build step).
 - `packages/config` — Empty placeholder.
@@ -22,13 +22,15 @@ Run from repo root. This is a pnpm/Turbo monorepo — always scope package comma
 # Install dependencies
 pnpm install
 
-# Provision local .env files (DATABASE_URL + generated per-machine JWT_SECRET
-# for the API and worker; NEXT_PUBLIC_API_URL for the storefront). Idempotent.
+# Provision local .env files (DATABASE_URL derived from docker-compose.yml, a
+# per-machine JWT_SECRET shared by API + worker, NEXT_PUBLIC_API_URL for the
+# storefront, and LOG_PRETTY=true). Idempotent; never overwrites existing values.
 pnpm setup
 
 # Start infrastructure (Postgres + Redis, waiting for readiness), provision
-# env, apply pending forward-only migrations, then run ALL dev tasks in
-# parallel (real Express API on :5000, worker, storefront on :3000).
+# env, apply pending forward-only migrations (turbo `dev` task depends on
+# `db:migrate`), then run ALL dev tasks in parallel (real Express API on
+# :5000, worker, storefront on :3000).
 pnpm dev
 
 # Stop infrastructure (containers stay; local volumes persist)
@@ -40,6 +42,14 @@ pnpm clean
 # Typecheck the API (the only meaningful verification; must exit 0)
 pnpm --filter @clothing-line-project/api typecheck
 
+# Typecheck API src + tests (tests include worker QueueWorker files) and run
+# the in-memory test suite; both must exit 0
+pnpm --filter @clothing-line-project/api typecheck:tests
+pnpm --filter @clothing-line-project/api test
+
+# Run the real-Postgres suites (requires live Postgres + DATABASE_URL)
+pnpm --filter @clothing-line-project/api db:test
+
 # Typecheck the worker runtime (imports the API via @api/* aliases)
 pnpm --filter @clothing-line-project/worker typecheck
 
@@ -50,11 +60,22 @@ pnpm --filter @clothing-line-project/api dev
 pnpm --filter @clothing-line-project/api dev:mock
 
 # Run the worker runtime (consumes BullMQ queues; needs Redis + Postgres up)
+# `start` runs once, `dev` runs in watch mode
 pnpm --filter @clothing-line-project/worker start
+pnpm --filter @clothing-line-project/worker dev
 
 # Regenerate shared types from the API OpenAPI spec
 pnpm --filter @clothing-line-project/shared-types generate
 ```
+
+`scripts/prepare-env.mjs` is the only file in `scripts/`. It idempotently
+provisions `apps/api/.env`, `apps/worker/.env`, and `apps/storefront/.env.local`
+without ever overwriting existing values: `DATABASE_URL` is regex-parsed from
+`docker-compose.yml` (the single source of truth for Postgres credentials), one
+random `JWT_SECRET` is generated per machine and shared between API and worker,
+a stale Prism URL (`http://localhost:4010`) in `NEXT_PUBLIC_API_URL` is
+normalized to `http://localhost:5000`, and `LOG_PRETTY=true` is set for pretty
+local logs. Run it manually via `pnpm setup`; `pnpm dev` runs it before Turbo.
 
 **Typechecking** is the primary validation gate for the domain layer. A zero-dependency test harness IS configured under `apps/api/tests` (`tests/harness/runner.ts` + `tests/harness/expect.ts`): `test` runs every suite via tsx, `typecheck:tests` typechecks src + tests (it may include `../worker/src/workers/QueueWorker.ts` and `../worker/src/workers/NotificationEventWorker.ts` so the API suite can exercise the real worker crash semantics), and `db:test` runs the real-Postgres suites (requires live Postgres + DATABASE_URL). Do not assume a framework like Jest/Vitest is installed. Verify domain changes with `typecheck`, `typecheck:tests`, and `test`; new suites must be registered in `apps/api/tests/run.ts`. The OpenAPI spec (`apps/api/openapi.yaml`) is the source of truth for the HTTP contract; `dev` boots the real Express server and `dev:mock` runs a Prism mock from it.
 
@@ -62,12 +83,14 @@ pnpm --filter @clothing-line-project/shared-types generate
 
 ```
 apps/
-  api/            # Domain + application layer (primary work area) + HTTP entry
-  storefront/     # Next.js storefront
+  api/            # Domain + application layer (primary work area) + infrastructure/HTTP adapters
+  storefront/     # Next.js storefront (static demo catalog; no API integration yet)
   worker/         # Background-worker runtime (consumes BullMQ queues)
 packages/
-  config/         # Empty
-  shared-types/   # openapi-typescript generated types (src/index.ts)
+  config/         # Empty placeholder
+  shared-types/   # openapi-typescript generated types (src/index.ts, no build step)
+scripts/
+  prepare-env.mjs # Idempotent local .env provisioning (pnpm setup / pnpm dev)
 docs/             # Design PDFs + working notes (git-ignored)
 pnpm-workspace.yaml
 turbo.json
@@ -77,26 +100,40 @@ tsconfig.base.json
 
 ## API architecture (README for editing `apps/api`)
 
-`apps/api` follows **Clean Architecture**. `apps/infrastructure` and `apps/adapters` are intentionally **empty** — this layer is designed to be surrogate-independent and dependency-injected. Respect the boundaries.
+`apps/api` follows **Clean Architecture**. All concrete adapters live INSIDE the
+API package — `src/infrastructure/` (Postgres/Kysely, Redis, services,
+observability, composition) and `src/adapters/http/` (transport boundary) — and
+are wired only at the composition root. There are NO separate
+`apps/infrastructure` / `apps/adapters` packages; concrete implementations stay
+out of `domain/`. Respect the boundaries.
 
 ```
 src/
+  server.ts                   # Express HTTP entry point (only top-level file)
   domain/
     entities/                 # Rich domain models with invariants (Cart, Order, ...)
       errors/DomainError.ts   # Domain error + ErrorCode union (single source of truth)
     interfaces/
       repositories/           # Persistence contracts (I*Repository)
       services/               # External/domain service contracts (I*Service)
-      shared/                 # Cross-cutting contracts (ILogger, IIdGenerator, ITransactionManager, RepositoryError)
-      shared/errors/RepositoryError.ts
-    shared/                   # contracts.ts, json.ts (JsonValue/Object), workflow.ts
+      shared/                 # ILogger, IIdGenerator, ITransactionManager + errors/RepositoryError.ts
+    shared/                   # contracts.ts, json.ts, workflow.ts, sourcing*, sourcingSnapshot.ts,
+                              # shippingSnapshot.ts, dispatchStateMachine.ts, trackingStateMachine.ts,
+                              # inventoryReservationKey.ts, jobs.ts, notifications.ts
   use-cases/
-    admin/ cart/ catalog/ checkout/ customers/ logistics/
+    admin/ cart/ catalog/ checkout/ customers/ inventory/ logistics/ notifications/
     # one file per use case, e.g. <Verb><Noun>UseCase.ts
-  infrastructure/             # Concrete adapters: Postgres/Kysely, Redis, services, observability, composition (HTTP runtime)
-  adapters/                   # HTTP transport boundary (routers/, middleware/, errors.ts, projections.ts) + index.ts barrel
-  utils/                      # handleUtils.ts, taxUtils.ts
+  infrastructure/             # Concrete adapters: database/ (Kysely + migrations + repositories),
+                              # redis/, services/, caching/ (product read cache), observability/,
+                              # composition/ (bootstrap, config, repository/service + use-case wiring)
+  adapters/
+    http/                     # HTTP transport boundary: routers/, middleware/, errors.ts,
+                              # projections.ts, index.ts barrel
+  utils/                      # handleUtils.ts, moneyUtils.ts, taxUtils.ts
 ```
+
+The OpenAPI 3.0 spec lives at `apps/api/openapi.yaml` (the source of truth for
+the HTTP contract); `packages/shared-types` is generated from it.
 
 ### Product read cache (L9-T)
 
@@ -111,7 +148,7 @@ HTTP routers. See `apps/api/README.md` for the full write-up. Essentials:
   `Invalidating{Product,Variant,MoneyAmount}Repository` bump the generation
   counter (`product-read:generation`) after `save()` via the fail-open
   `ProductReadCacheInvalidator`.
-- **Keys**: `product-read:v1:<generation>:<sha256(method:generation:canonicalContext)>`.
+- **Keys**: `product-read:v2:<generation>:<sha256(method:generation:canonicalContext)>`.
   Generation is part of the key AND the envelope hash echo. Versioning bumps on
   any key/payload/projection change. Invalidation is generation/namespace
   versioning — O(1) INCR, NEVER a `KEYS` scan or mass `DEL`; orphaned entries
@@ -209,7 +246,9 @@ The background worker runtime lives in its own package and **imports** the API's
 shared code via `@api/*` tsconfig path aliases (`apps/worker/tsconfig.json` →
 `../api/src/*`). It must never duplicate a use case, repository, or service.
 It composes the BullMQ workers (`PaymentEventWorker`, `LogisticsEventWorker`,
-`NotificationEventWorker`, `BulkCatalogImportWorker`) and its own composition
+`NotificationEventWorker`, `BulkCatalogImportWorker`) via
+`composition/workers.ts` (`buildWorkers`), manages their lifecycle with
+`WorkerRegistry` (register/startAll/closeAll), and has its own composition
 root (`apps/worker/src/bootstrap.ts`). The `NotificationEventWorker` consumes
 `QUEUE_NAMES.notificationEvents` and dispatches through the shared
 `INotificationService` (the Resend adapter is constructed ONLY via
@@ -243,12 +282,22 @@ transaction. Workers start only on explicit `runtime.start()` from
 
 ## Storefront / Next.js
 
-Next.js App Router under `apps/storefront/src/app`. Tailwind CSS v4 (`@tailwindcss/postcss`). Build via `turbo run build`. No global state or API integration layers are implemented yet.
+Next.js App Router under `apps/storefront/src/app`. Next 16, React 19, Tailwind
+CSS v4 (`@tailwindcss/postcss`), React Compiler enabled (`next.config.ts`). The
+storefront is a static demo UI: a hardcoded catalog in `src/lib/product.ts`,
+client contexts (`CartContext`, `WishlistContext`, `CurrencyContext`,
+`ToastContext`), plus cart drawer / wishlist / checkout views. It does NOT
+depend on `@clothing-line-project/shared-types` or call the API — `src/lib/types.ts`
+re-exports the shared types via a relative path into `packages/shared-types/src`.
+Build via `turbo run build`; lint via
+`pnpm --filter @clothing-line-project/storefront lint`.
 
 ## Infra notes
 
-- `docker-compose.yml` runs Postgres 18 (host port `5433`) and Redis 7 (`6379`). Root `pnpm dev` brings them up.
-- `.gitignore` excludes `node_modules`, build outputs (`dist`, `.next`), env files, `docs/`, and local DB volumes.
+- `docker-compose.yml` runs Postgres 18 (host port `5433`, db `commerce_db`) and Redis 7 (`6379`, AOF enabled), both with healthchecks. Root `pnpm dev` brings them up and waits for readiness (`--wait`).
+- `pnpm dev` runs migrations via the turbo `dev` task's `dependsOn: ["db:migrate"]`; `pnpm stop` keeps volumes, `pnpm clean` wipes them.
+- `pnpm-workspace.yaml` covers `apps/*` and `packages/*`; `pnpm` is pinned via root `devEngines.packageManager` (`pnpm ^11.18.0`, auto-download).
+- `.gitignore` excludes `node_modules`, build outputs (`dist`, `.next`, `out`), env files, `docs/`, `.opencode/`, and local DB volumes.
 
 ## Rules for AI tools
 

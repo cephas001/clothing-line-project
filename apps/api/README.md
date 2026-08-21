@@ -47,9 +47,9 @@ revocation only.
 
 ### Cache key versioning
 
-- Namespace `product-read:v1:` — any change to key derivation, payload shape, or
+- Namespace `product-read:v2:` — any change to key derivation, payload shape, or
   projection semantics MUST bump the version so old entries can never be read.
-- Every key embeds a monotonic **generation**: `product-read:v1:<gen>:<hash>`.
+- Every key embeds a monotonic **generation**: `product-read:v2:<gen>:<hash>`.
   The generation is also folded into the SHA-256 hash
   (`sha256(method:generation:canonicalContext)`), so it is part of the key AND
   its integrity echo.

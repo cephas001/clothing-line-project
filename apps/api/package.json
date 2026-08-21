@@ -14,7 +14,8 @@
     "db:migrate": "tsx src/infrastructure/database/migrations/migrate.ts",
     "db:migrate:up": "tsx src/infrastructure/database/migrations/migrate.ts -- --up",
     "db:migrate:down": "tsx src/infrastructure/database/migrations/migrate.ts -- --down",
-    "db:migrate:list": "tsx src/infrastructure/database/migrations/migrate.ts -- --list"
+    "db:migrate:list": "tsx src/infrastructure/database/migrations/migrate.ts -- --list",
+    "db:seed:dev": "tsx src/infrastructure/database/seeds/devCatalog.ts"
   },
   "keywords": [],
   "author": "",
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@stoplight/prism-cli": "^5.16.0",
     "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.19.43",
@@ -43,6 +45,7 @@
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^6.0.10",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "import-in-the-middle": "^3.3.3",
